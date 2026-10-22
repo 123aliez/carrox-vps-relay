@@ -67,7 +67,18 @@ func cfDo(token, method, path string, body any) ([]byte, error) {
 		return nil, err
 	}
 	defer res.Body.Close()
-	return io.ReadAll(res.Body)
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		var env cfEnvelope[json.RawMessage]
+		if json.Unmarshal(raw, &env) == nil && len(env.Errors) > 0 {
+			return nil, cfErrorList(env.Errors)
+		}
+		return nil, fmt.Errorf("Cloudflare HTTP %d", res.StatusCode)
+	}
+	return raw, nil
 }
 
 func cfVerifyToken(token string) error {
@@ -126,25 +137,51 @@ func cfFindZoneByName(token, name string) (*cfZone, error) {
 	return &env.Result[0], nil
 }
 
-func cfFindRecord(token, zoneID, name, typ string) (*cfRecord, error) {
+// 完整读取同名记录，不能把查询失败或多记录误当成不存在。
+func cfListRecords(token, zoneID, name string) ([]cfRecord, error) {
 	q := url.Values{}
-	q.Set("type", typ)
 	q.Set("name", name)
-	raw, err := cfDo(token, "GET", "/zones/"+zoneID+"/dns_records?"+q.Encode(), nil)
+	q.Set("per_page", "100")
+	var records []cfRecord
+	for page := 1; ; page++ {
+		q.Set("page", fmt.Sprint(page))
+		raw, err := cfDo(token, "GET", "/zones/"+zoneID+"/dns_records?"+q.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		var env cfEnvelope[[]cfRecord]
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return nil, err
+		}
+		if !env.Success {
+			return nil, cfErrorList(env.Errors)
+		}
+		records = append(records, env.Result...)
+		if len(env.Result) < 100 {
+			return records, nil
+		}
+	}
+}
+
+// PATCH 只修改接管所需字段，保留同一记录的 ID、备注和其他属性。
+func cfUpdateRecord(token, zoneID, recordID string, rec cfRecord) (*cfRecord, error) {
+	body := struct {
+		Content string `json:"content"`
+		TTL     int    `json:"ttl"`
+		Proxied bool   `json:"proxied"`
+	}{rec.Content, rec.TTL, rec.Proxied}
+	raw, err := cfDo(token, "PATCH", "/zones/"+zoneID+"/dns_records/"+recordID, body)
 	if err != nil {
 		return nil, err
 	}
-	var env cfEnvelope[[]cfRecord]
+	var env cfEnvelope[cfRecord]
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, err
 	}
 	if !env.Success {
 		return nil, cfErrorList(env.Errors)
 	}
-	if len(env.Result) == 0 {
-		return nil, nil
-	}
-	return &env.Result[0], nil
+	return &env.Result, nil
 }
 
 func cfCreateRecord(token, zoneID string, rec cfRecord) (*cfRecord, error) {

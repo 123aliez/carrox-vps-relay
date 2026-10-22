@@ -174,6 +174,8 @@ type createReq struct {
 }
 
 func sitesCreate(w http.ResponseWriter, r *http.Request) {
+	siteMutationMu.Lock()
+	defer siteMutationMu.Unlock()
 	var req createReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -211,72 +213,20 @@ func sitesCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CF DNS A record: reuse if exists & matches; otherwise create.
-	var recID string
-	if existing, _ := cfFindRecord(tok, zone.ID, req.Domain, "A"); existing != nil {
-		if existing.Content != edge {
-			writeErr(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("DNS A 记录已存在但指向 %s（期望 %s）", existing.Content, edge))
-			return
-		}
-		recID = existing.ID
-	} else {
-		rec, err := cfCreateRecord(tok, zone.ID, cfRecord{
-			Type: "A", Name: req.Domain, Content: edge, TTL: 60, Proxied: false,
-		})
-		if err != nil {
-			writeErr(w, http.StatusBadGateway, "CF 创建记录失败: "+err.Error())
-			return
-		}
-		recID = rec.ID
-	}
-
-	rollbackDNS := func() {
-		_ = cfDeleteRecord(tok, zone.ID, recID)
-	}
-
-	// Issue cert via the shim.
-	if err := acmeIssue(req.Domain, tok, keyID); err != nil {
-		rollbackDNS()
-		writeErr(w, http.StatusInternalServerError, "签发证书失败: "+err.Error())
+	if err := validateRelayUpstream(req.Domain, req.Upstream, edge); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	// Render conf.
 	meta := SiteMeta{
-		V: 1, Domain: req.Domain, Upstream: req.Upstream,
-		Owner: keyID, CFZone: zone.Name, CFRecordID: recID,
-		Created: time.Now().UTC().Format(time.RFC3339),
+		V: 2, Domain: req.Domain, Upstream: req.Upstream,
+		Owner: keyID, Created: time.Now().UTC().Format(time.RFC3339),
 	}
-	rendered, err := renderSite(meta)
+	meta, err = provisionSite(meta, tok, edge, *zone, liveSiteLifecycle())
 	if err != nil {
-		rollbackDNS()
-		_ = acmeRevoke(req.Domain, tok, keyID)
-		writeErr(w, http.StatusInternalServerError, "渲染配置失败: "+err.Error())
+		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	target := confPath(req.Domain)
-	if err := atomicWrite(target, rendered, 0o644); err != nil {
-		rollbackDNS()
-		_ = acmeRevoke(req.Domain, tok, keyID)
-		writeErr(w, http.StatusInternalServerError, "写入配置失败: "+err.Error())
-		return
-	}
-
-	if err := nginxSyntaxCheck(); err != nil {
-		_ = os.Remove(target)
-		rollbackDNS()
-		_ = acmeRevoke(req.Domain, tok, keyID)
-		writeErr(w, http.StatusUnprocessableEntity, err.Error())
-		return
-	}
-	if err := nginxReload(); err != nil {
-		_ = os.Remove(target)
-		rollbackDNS()
-		_ = acmeRevoke(req.Domain, tok, keyID)
-		writeErr(w, http.StatusInternalServerError, "nginx reload 失败: "+err.Error())
-		return
-	}
 
 	site := Site{SiteMeta: meta, ConfPath: target, Enabled: true}
 	probeSite(&site)
@@ -290,6 +240,8 @@ type editReq struct {
 }
 
 func sitesEdit(w http.ResponseWriter, r *http.Request) {
+	siteMutationMu.Lock()
+	defer siteMutationMu.Unlock()
 	domain := strings.ToLower(r.PathValue("domain"))
 	if err := validateDomain(domain); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -325,6 +277,10 @@ func sitesEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, _, _, _, err := parseUpstream(req.Upstream); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRelayUpstream(domain, req.Upstream, edgeIPv4()); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -364,6 +320,8 @@ func sitesEdit(w http.ResponseWriter, r *http.Request) {
 // --- toggle (enable/disable) ---
 
 func sitesToggle(w http.ResponseWriter, r *http.Request) {
+	siteMutationMu.Lock()
+	defer siteMutationMu.Unlock()
 	domain := strings.ToLower(r.PathValue("domain"))
 	if err := validateDomain(domain); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -415,6 +373,8 @@ func sitesToggle(w http.ResponseWriter, r *http.Request) {
 // --- delete ---
 
 func sitesDelete(w http.ResponseWriter, r *http.Request) {
+	siteMutationMu.Lock()
+	defer siteMutationMu.Unlock()
 	domain := strings.ToLower(r.PathValue("domain"))
 	if err := validateDomain(domain); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -423,41 +383,38 @@ func sitesDelete(w http.ResponseWriter, r *http.Request) {
 	keyID := authKeyID(r)
 	isAdmin := authIsAdmin(r)
 
-	var path string
-	if _, err := os.Stat(confPath(domain)); err == nil {
-		path = confPath(domain)
-	} else if _, err := os.Stat(confPath(domain) + ".disabled"); err == nil {
-		path = confPath(domain) + ".disabled"
-	} else {
-		writeErr(w, http.StatusNotFound, "站点不存在")
+	path, staged, err := resolveSiteDeletePath(confPath(domain))
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeErr(w, http.StatusNotFound, "站点不存在")
+		} else {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+		}
 		return
 	}
-	meta, _ := readSiteMeta(path)
+	readPath := path
+	if staged {
+		readPath += ".relay-delete.bak"
+	}
+	meta, err := readSiteMeta(readPath)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取元数据失败: "+err.Error())
+		return
+	}
 	if !isAdmin && meta.Owner != keyID {
 		writeErr(w, http.StatusForbidden, "无权操作此站点")
 		return
 	}
-	if err := os.Remove(path); err != nil {
-		writeErr(w, http.StatusInternalServerError, "删除配置失败: "+err.Error())
-		return
-	}
-	_ = nginxReload()
-
-	// Best-effort CF + cert cleanup using the owner's CF token.
 	owner := meta.Owner
 	if owner == "" {
 		owner = "admin"
 	}
-	tok := cfTokenForKey(owner)
-	if tok != "" && meta.CFZone != "" && meta.CFRecordID != "" {
-		zone, _ := cfFindZoneByName(tok, meta.CFZone)
-		if zone != nil {
-			_ = cfDeleteRecord(tok, zone.ID, meta.CFRecordID)
-		}
+	meta.Owner = owner
+	if err := removeManagedSite(meta, cfTokenForKey(owner), path, staged, liveSiteLifecycle()); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
 	}
-	if tok != "" {
-		_ = acmeRevoke(domain, tok, owner)
-	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": domain})
 }
 
@@ -472,6 +429,8 @@ type adoptReq struct {
 }
 
 func sitesAdopt(w http.ResponseWriter, r *http.Request) {
+	siteMutationMu.Lock()
+	defer siteMutationMu.Unlock()
 	var req adoptReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -499,7 +458,7 @@ func sitesAdopt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := confPath(req.Domain)
-	if _, err := os.Stat(target); err == nil {
+	if existsAnyForm(req.Domain) {
 		writeErr(w, http.StatusConflict, "托管站点已存在: "+req.Domain)
 		return
 	}
@@ -600,13 +559,8 @@ func keysDelete(w http.ResponseWriter, r *http.Request) {
 // ---------------- helpers ----------------
 
 func existsAnyForm(domain string) bool {
-	if _, err := os.Stat(confPath(domain)); err == nil {
-		return true
-	}
-	if _, err := os.Stat(confPath(domain) + ".disabled"); err == nil {
-		return true
-	}
-	return false
+	_, _, err := resolveSiteDeletePath(confPath(domain))
+	return !os.IsNotExist(err)
 }
 
 func validateDomain(d string) error {

@@ -14,7 +14,7 @@
     .CreatedUTC      : ISO8601 timestamp (relay-meta)
 */ -}}
 # ====== vps-relay managed: DO NOT HAND EDIT ======
-# relay-meta: {"v":1,"domain":"{{.Domain}}","upstream":"{{.Upstream}}"{{if .Owner}},"owner":"{{.Owner}}"{{end}},"cf_zone":"{{.CFZone}}","cf_record_id":"{{.CFRecordID}}"{{if .CFRecordIDV6}},"cf_record_id_v6":"{{.CFRecordIDV6}}"{{end}},"created":"{{.CreatedUTC}}"}
+# relay-meta: {{.MetaJSON}}
 # =================================================
 
 server {

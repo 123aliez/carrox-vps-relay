@@ -41,8 +41,7 @@ case "$ACTION" in
   renew)
     "$ACME" --home "$ACME_HOME" --renew -d "$DOMAIN" --ecc --force
     ;;
-  revoke)
-    "$ACME" --home "$ACME_HOME" --revoke -d "$DOMAIN" --ecc || true
+  remove)
     "$ACME" --home "$ACME_HOME" --remove -d "$DOMAIN" --ecc || true
     # `--remove` only de-registers from the renew list; we also wipe the
     # _ecc material so a subsequent `issue` can re-create the domain key
@@ -50,7 +49,7 @@ case "$ACTION" in
     rm -rf "$SSL_DIR" "$ACME_HOME/${DOMAIN}_ecc"
     ;;
   *)
-    echo "unknown action: $ACTION (expected issue|renew|revoke)" >&2
+    echo "未知操作: $ACTION (应为 issue|renew|remove)" >&2
     exit 2
     ;;
 esac

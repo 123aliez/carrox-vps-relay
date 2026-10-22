@@ -139,6 +139,7 @@
         <template x-if="!cfStatus.configured">
           <p class="muted small">配置 Cloudflare Token 后可用。</p>
         </template>
+        <p class="muted small" x-show="cfStatus.configured">已有 A 记录会更新为中转 IP。上游请填写原服务器 IP 或独立源站域名。</p>
         <div class="row3" x-show="cfStatus.configured">
           <div>
             <label>加速域名</label>
@@ -189,7 +190,8 @@
               <span class="dom" x-text="s.domain"></span>
               <span class="ups">→ <span x-text="s.upstream"></span></span>
               <template x-if="s.enabled"><span class="pill ok">启用</span></template>
-              <template x-if="!s.enabled"><span class="pill muted">停用</span></template>
+              <template x-if="!s.enabled && !s.deletion_pending"><span class="pill muted">停用</span></template>
+              <template x-if="s.deletion_pending"><span class="pill warn">删除未完成</span></template>
               <template x-if="s.cert_days_left > 14"><span class="pill ok small" x-text="'cert ' + s.cert_days_left + 'd'"></span></template>
               <template x-if="s.cert_days_left > 0 && s.cert_days_left <= 14"><span class="pill warn small" x-text="'cert ' + s.cert_days_left + 'd'"></span></template>
               <template x-if="s.cert_days_left <= 0"><span class="pill err small">证书已过期</span></template>
@@ -206,8 +208,8 @@
               <span x-text="'created ' + (s.created || '?')"></span>
             </div>
             <div class="actions">
-              <button class="secondary small" @click="startEdit(s)">编辑</button>
-              <button class="secondary small" @click="toggleSite(s)"
+              <button class="secondary small" @click="startEdit(s)" :disabled="s.deletion_pending">编辑</button>
+              <button class="secondary small" @click="toggleSite(s)" :disabled="s.deletion_pending"
                       x-text="s.enabled ? '停用' : '启用'"></button>
               <button class="danger small" @click="deleteSite(s)">删除</button>
             </div>
@@ -437,7 +439,7 @@ function app() {
     },
 
     async deleteSite(s) {
-      if (!confirm('删除 ' + s.domain + '?\n会清掉 DNS、证书和反代配置。')) return;
+      if (!confirm('删除 ' + s.domain + '?\n会移除反代；接管的 DNS 恢复原值，新建的 DNS 删除，复用及旧版来源不明的 DNS 保留。')) return;
       const r = await fetch('/api/sites/' + encodeURIComponent(s.domain), {
         method: 'DELETE', credentials: 'include'
       });

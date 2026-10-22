@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	templatePath = "/opt/vps-relay/templates/site.conf.tmpl"
-	nginxPidPath = "/usr/local/nginx/logs/nginx.pid"
-	hostNginxConf = "/usr/local/nginx/conf/nginx.conf"
+	templatePath    = "/opt/vps-relay/templates/site.conf.tmpl"
+	nginxPidPath    = "/usr/local/nginx/logs/nginx.pid"
+	hostNginxConf   = "/usr/local/nginx/conf/nginx.conf"
 	hostNginxPrefix = "/usr/local/nginx"
 )
 
@@ -35,6 +35,7 @@ type renderCtx struct {
 	CFRecordID     string
 	CFRecordIDV6   string
 	CreatedUTC     string
+	MetaJSON       string
 }
 
 func parseUpstream(raw string) (scheme, host string, port int, isIP bool, err error) {
@@ -69,11 +70,15 @@ func parseUpstream(raw string) (scheme, host string, port int, isIP bool, err er
 }
 
 func renderSite(meta SiteMeta) ([]byte, error) {
+	return renderSiteWithTemplate(meta, templatePath)
+}
+
+func renderSiteWithTemplate(meta SiteMeta, path string) ([]byte, error) {
 	scheme, host, port, isIP, err := parseUpstream(meta.Upstream)
 	if err != nil {
 		return nil, err
 	}
-	tmpl, err := template.ParseFiles(templatePath)
+	tmpl, err := template.ParseFiles(path)
 	if err != nil {
 		return nil, fmt.Errorf("read template: %w", err)
 	}
@@ -89,6 +94,7 @@ func renderSite(meta SiteMeta) ([]byte, error) {
 		CFRecordID:     meta.CFRecordID,
 		CFRecordIDV6:   meta.CFRecordIDV6,
 		CreatedUTC:     meta.Created,
+		MetaJSON:       string(mustJSON(meta)),
 	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, ctx); err != nil {

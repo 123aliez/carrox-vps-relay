@@ -26,27 +26,30 @@ const (
 // On-disk JSON header stored in the conf file: every byte of authoritative
 // state we keep (cf record ids, original upstream, creation timestamp).
 type SiteMeta struct {
-	V            int    `json:"v"`
-	Domain       string `json:"domain"`
-	Upstream     string `json:"upstream"`
-	Owner        string `json:"owner,omitempty"`
-	CFZone       string `json:"cf_zone"`
-	CFRecordID   string `json:"cf_record_id"`
-	CFRecordIDV6 string `json:"cf_record_id_v6,omitempty"`
-	Created      string `json:"created"`
+	V                int        `json:"v"`
+	Domain           string     `json:"domain"`
+	Upstream         string     `json:"upstream"`
+	Owner            string     `json:"owner,omitempty"`
+	CFZone           string     `json:"cf_zone"`
+	CFRecordID       string     `json:"cf_record_id"`
+	CFRecordIDV6     string     `json:"cf_record_id_v6,omitempty"`
+	Created          string     `json:"created"`
+	DNS              *DNSChange `json:"dns,omitempty"`
+	CertificateOwned bool       `json:"certificate_owned,omitempty"`
 }
 
 // Site is what the API returns: meta + runtime probes.
 type Site struct {
 	SiteMeta
 
-	Enabled       bool   `json:"enabled"`
-	ConfPath      string `json:"-"`
-	CertNotAfter  string `json:"cert_not_after,omitempty"`
-	CertDaysLeft  int    `json:"cert_days_left"`
-	DNSResolvedTo string `json:"dns_resolved_to,omitempty"`
-	UpstreamOK    bool   `json:"upstream_ok"`
-	EdgeOK        bool   `json:"edge_ok"`
+	Enabled         bool   `json:"enabled"`
+	DeletionPending bool   `json:"deletion_pending,omitempty"`
+	ConfPath        string `json:"-"`
+	CertNotAfter    string `json:"cert_not_after,omitempty"`
+	CertDaysLeft    int    `json:"cert_days_left"`
+	DNSResolvedTo   string `json:"dns_resolved_to,omitempty"`
+	UpstreamOK      bool   `json:"upstream_ok"`
+	EdgeOK          bool   `json:"edge_ok"`
 }
 
 var metaRE = regexp.MustCompile(`#\s*relay-meta:\s*(\{.*\})`)
@@ -60,8 +63,12 @@ func scanSites(keyID string, isAdmin bool) ([]Site, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	// Drop the panel's own vhost.
-	files := append(filterPanel(enabled), filterPanel(disabled)...)
+	pending, err := filepath.Glob(filepath.Join(confDir, "relay-*.conf*.relay-delete.bak"))
+	if err != nil {
+		return nil, nil, err
+	}
+	// 隔离的删除备份仍列在面板，支持清理失败或进程中断后重试。
+	files := append(append(filterPanel(enabled), filterPanel(disabled)...), filterPanel(pending)...)
 
 	var (
 		out  []Site
@@ -87,7 +94,11 @@ func scanSites(keyID string, isAdmin bool) ([]Site, []string, error) {
 				continue
 			}
 		}
-		s := Site{SiteMeta: meta, ConfPath: fp, Enabled: !strings.HasSuffix(fp, ".disabled")}
+		deleting := strings.HasSuffix(fp, ".relay-delete.bak")
+		if deleting {
+			warn = append(warn, meta.Domain+" 删除尚未完成，请再次删除重试")
+		}
+		s := Site{SiteMeta: meta, ConfPath: fp, Enabled: !strings.HasSuffix(fp, ".disabled") && !deleting, DeletionPending: deleting}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -104,7 +115,7 @@ func scanSites(keyID string, isAdmin bool) ([]Site, []string, error) {
 func filterPanel(in []string) []string {
 	out := in[:0]
 	for _, p := range in {
-		name := filepath.Base(p)
+		name := strings.TrimSuffix(filepath.Base(p), ".relay-delete.bak")
 		if name == "relay-panel.conf" || name == "relay-panel.conf.disabled" {
 			continue
 		}
