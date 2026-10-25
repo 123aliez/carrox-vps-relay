@@ -144,7 +144,7 @@
           <div>
             <label>加速域名</label>
             <div class="domain-parts">
-              <input type="text" x-model="newSub" placeholder="api" style="flex:1.2;" />
+              <input type="text" x-model="newSub" placeholder="api（留空 = 一级域名）" style="flex:1.2;" />
               <select x-model="newZone" style="flex:1.6;">
                 <option value="">选择 Zone…</option>
                 <template x-for="z in zones" :key="z.id">
@@ -159,7 +159,7 @@
           </div>
           <div>
             <label>&nbsp;</label>
-            <button class="mobile-full" @click="createSite()" :disabled="creating || !newSub || !newZone || !newUpstream"
+            <button class="mobile-full" @click="createSite()" :disabled="creating || !newZone || !newUpstream"
                     x-text="creating ? '创建中…' : '一键创建'"></button>
           </div>
         </div>
@@ -396,7 +396,7 @@ function app() {
       if (r.ok) { const j = await r.json(); this.sites = j.sites || []; this.sitesWarnings = j.warnings || []; if (j.edge_ip) this.edgeIp = j.edge_ip; }
     },
 
-    fullDomain() { return this.newSub.trim() + '.' + this.newZone.trim(); },
+    fullDomain() { const s = this.newSub.trim(), z = this.newZone.trim(); return s ? s + '.' + z : z; },
 
     async createSite() {
       this.creating = true;
