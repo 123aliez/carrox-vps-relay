@@ -69,6 +69,33 @@ ensure_connection_upgrade_map() {
   fi
 }
 
+ensure_stream_block() {
+  install -d -m 0755 /usr/local/nginx/conf/stream.d
+  if grep -qE '^[[:space:]]*include[[:space:]]+[^[:space:]]*stream\.d/\*\.conf[[:space:]]*;' "$NGX_CONF"; then
+    log "stream block already present"
+    return 0
+  fi
+
+  log "patching nginx.conf with stream block (TCP forwards)"
+  local backup="${NGX_CONF}.bak.$(date +%Y%m%d%H%M%S)"
+  cp "$NGX_CONF" "$backup"
+  if ! python3 "$HERE/deploy/patch-nginx-stream.py" "$NGX_CONF"; then
+    cp "$backup" "$NGX_CONF"
+    echo "ERROR: stream patch failed; original restored from $backup." >&2
+    exit 1
+  fi
+  if ! /usr/local/nginx/sbin/nginx -p /usr/local/nginx -c conf/nginx.conf -t >/dev/null 2>&1; then
+    cp "$backup" "$NGX_CONF"
+    echo "ERROR: nginx -t failed after stream patch attempt; original restored from $backup." >&2
+    exit 1
+  fi
+  if ! /usr/local/nginx/sbin/nginx -s reload; then
+    cp "$backup" "$NGX_CONF"
+    echo "ERROR: nginx reload failed after stream patch attempt; original restored from $backup." >&2
+    exit 1
+  fi
+}
+
 # --- 1. Prereq checks ------------------------------------------------------
 if [ ! -x /usr/local/nginx/sbin/nginx ]; then
   echo "ERROR: /usr/local/nginx/sbin/nginx not found — install nginx 1.28.x first." >&2
@@ -99,6 +126,7 @@ fi
 
 # --- 2. nginx.conf fallback patch ------------------------------------------
 ensure_connection_upgrade_map
+ensure_stream_block
 
 # --- 3. /etc/vps-relay/ ----------------------------------------------------
 install -d -m 0750 /etc/vps-relay

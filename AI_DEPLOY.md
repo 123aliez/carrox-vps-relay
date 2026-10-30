@@ -24,6 +24,7 @@ AI 在部署时应遵守以下规则：
 - **不得覆盖**已有业务站点配置
 - 只允许：
   - 增量补充 `nginx.conf` 中缺失的 `connection_upgrade` map
+  - 增量补充 `nginx.conf` 中缺失的 `stream` 块（引入 `stream.d/*.conf`，用于 TCP 转发）
   - 新增 `relay-panel.conf`
   - 新增 `/etc/vps-relay/*`
   - 构建并启动 `vps-relay` 容器
@@ -41,7 +42,7 @@ bash deploy/install.sh --domain relay.example.com
 行为：
 
 - 自动检查 Nginx / Docker / Docker Compose
-- 若 `nginx.conf` 缺少 `connection_upgrade`，自动补齐
+- 若 `nginx.conf` 缺少 `connection_upgrade` 或 `stream` 块，自动补齐
 - 新增 `/usr/local/nginx/conf/conf.d/relay-panel.conf`
 - 面板通过 `http://relay.example.com` 访问
 - 构建并启动 `vps-relay`

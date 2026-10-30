@@ -21,6 +21,8 @@ const (
 	nginxPidPath    = "/usr/local/nginx/logs/nginx.pid"
 	hostNginxConf   = "/usr/local/nginx/conf/nginx.conf"
 	hostNginxPrefix = "/usr/local/nginx"
+	// 宿主 Nginx 静态编译了 stream，容器内的 Alpine Nginx 是动态模块，要显式加载才能解析 stream 块。
+	streamModulePath = "/usr/lib/nginx/modules/ngx_stream_module.so"
 )
 
 type renderCtx struct {
@@ -116,7 +118,8 @@ func nginxSyntaxCheck() error {
 	ctx, cancel := contextWithTimeout(8 * time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx,
-		"nginx", "-p", hostNginxPrefix, "-c", hostNginxConf, "-t",
+		"nginx", "-p", hostNginxPrefix, "-c", hostNginxConf,
+		"-g", "load_module "+streamModulePath+";", "-t",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

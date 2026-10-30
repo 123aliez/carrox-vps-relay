@@ -1,0 +1,15 @@
+{{- /*
+  vps-relay — 托管的四层 TCP 转发，由 tcpforward.go 渲染。
+  变量：.ListenPort 入口端口，.Upstream 上游 host:port，.MetaJSON 元数据。
+*/ -}}
+# ====== vps-relay managed: DO NOT HAND EDIT ======
+# relay-meta: {{.MetaJSON}}
+# =================================================
+
+server {
+    listen {{.ListenPort}};
+    proxy_pass {{.Upstream}};
+    proxy_connect_timeout 10s;
+    # 隧道连接可能长时间空闲，默认的 10 分钟太短。
+    proxy_timeout 1h;
+}

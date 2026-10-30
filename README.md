@@ -9,6 +9,7 @@
 - **站点隔离**：普通用户只能看到和操作自己创建的站点，管理员可管理所有站点
 - **自动续签**：每 12 小时扫描，证书剩余 ≤30 天时自动续签
 - **WebSocket/SSE 透传**：默认支持，无需额外配置
+- **TCP 转发（管理员）**：粘贴 Reality 节点的 `vless://` 链接（或填上游 `IP:端口`），开一个四层转发端口并导出改好地址的新链接；不需要域名和证书。上游只支持公网 IP，入口端口要在防火墙放行
 - **无数据库**：所有状态存储在 Nginx 配置文件的 `relay-meta` 注释中，文件即真相
 - **证书脱敏**：CF Token 在界面中脱敏显示
 
@@ -123,6 +124,10 @@ curl -X DELETE http://127.0.0.1:8787/api/keys/user01 \
 | POST | `/api/sites/{domain}/toggle` | 启用/停用站点 |
 | DELETE | `/api/sites/{domain}` | 删除站点 |
 | POST | `/api/sites/adopt` | 接管已有 Nginx 配置 |
+| GET | `/api/tcp-forwards` | 列出 TCP 转发（admin only） |
+| POST | `/api/tcp-forwards` | 创建 TCP 转发，有节点链接时返回新链接（admin only） |
+| GET | `/api/tcp-forwards/{port}/link` | 重新导出新链接（admin only） |
+| DELETE | `/api/tcp-forwards/{port}` | 删除 TCP 转发（admin only） |
 | GET | `/api/keys` | 列出密钥（admin only，脱敏） |
 | POST | `/api/keys` | 创建密钥（admin only） |
 | DELETE | `/api/keys/{key_id}` | 删除密钥（admin only） |
@@ -135,6 +140,8 @@ curl -X DELETE http://127.0.0.1:8787/api/keys/user01 \
 | `/etc/vps-relay/users/{id}/cf-token` | 用户私有 Cloudflare Token |
 | `/usr/local/nginx/conf/conf.d/relay-*.conf` | 站点配置 |
 | `/usr/local/nginx/conf/ssl/{domain}/` | TLS 证书 |
+| `/usr/local/nginx/conf/stream.d/relay-tcp-{port}.conf` | TCP 转发配置（`nginx.conf` 需引入 `stream.d/*.conf`，`install.sh` 会补齐） |
+| `/etc/vps-relay/tcp-links/{port}.link` | 导出的节点链接，含凭据，权限 600 |
 
 ## 更新
 

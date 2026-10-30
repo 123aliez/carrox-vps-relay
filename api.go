@@ -39,6 +39,12 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sites/{domain}/toggle", auth(sitesToggle))
 	mux.HandleFunc("DELETE /api/sites/{domain}", auth(sitesDelete))
 
+	// TCP forwards (admin only).
+	mux.HandleFunc("GET /api/tcp-forwards", auth(tcpForwardsList))
+	mux.HandleFunc("POST /api/tcp-forwards", auth(tcpForwardsCreate))
+	mux.HandleFunc("GET /api/tcp-forwards/{port}/link", auth(tcpForwardLink))
+	mux.HandleFunc("DELETE /api/tcp-forwards/{port}", auth(tcpForwardsDelete))
+
 	// Key management (admin only).
 	mux.HandleFunc("GET /api/keys", auth(keysList))
 	mux.HandleFunc("POST /api/keys", auth(keysCreate))
@@ -601,7 +607,11 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		os.Remove(name)
 		return err
 	}
-	return os.Rename(name, path)
+	if err := os.Rename(name, path); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 func copyFile(src, dst string) error {

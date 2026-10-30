@@ -33,6 +33,7 @@ RUN apk add --no-cache \
         tzdata \
         socat \
         nginx \
+        nginx-mod-stream \
         shadow \
     && (getent group www >/dev/null || addgroup -S www) \
     && (id www >/dev/null 2>&1 || adduser -SDH -G www -s /sbin/nologin www) \
