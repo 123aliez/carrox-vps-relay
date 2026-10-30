@@ -140,6 +140,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 			Value:    entry.Key,
 			Path:     "/",
 			HttpOnly: true,
+			Secure:   r.Header.Get("X-Forwarded-Proto") == "https",
 			SameSite: http.SameSiteLaxMode,
 			Expires:  time.Now().Add(cookieMaxAge),
 		})

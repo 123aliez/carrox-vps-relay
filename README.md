@@ -143,6 +143,16 @@ curl -X DELETE http://127.0.0.1:8787/api/keys/user01 \
 | `/usr/local/nginx/conf/stream.d/relay-tcp-{port}.conf` | TCP 转发配置（`nginx.conf` 需引入 `stream.d/*.conf`，`install.sh` 会补齐） |
 | `/etc/vps-relay/tcp-links/{port}.link` | 导出的节点链接，含凭据，权限 600 |
 
+## 面板 HTTPS
+
+先在面板配置 Cloudflare Token，再签发证书并换成 HTTPS 配置。面板每 12 小时检查一次，证书剩余 ≤30 天时自动续签。
+
+```bash
+docker exec vps-relay sh -c '[ -e /root/.acme.sh-admin ] || ln -s /root/.acme.sh/users/admin /root/.acme.sh-admin; CF_API_TOKEN=$(cat /etc/vps-relay/users/admin/cf-token) ACME_HOME=/root/.acme.sh-admin relay-acme <面板域名> issue'
+bash deploy/render-panel-conf.sh <面板域名> templates/panel-ssl.conf.tmpl | sudo tee /usr/local/nginx/conf/conf.d/relay-panel.conf >/dev/null
+sudo /usr/local/nginx/sbin/nginx -p /usr/local/nginx -c conf/nginx.conf -t && sudo /usr/local/nginx/sbin/nginx -s reload
+```
+
 ## 更新
 
 ```bash

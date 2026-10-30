@@ -370,6 +370,29 @@ func TestRemoveTCPForwardStagedKeepsBackupOnFailure(t *testing.T) {
 	}
 }
 
+func TestPanelCertDomain(t *testing.T) {
+	https := "server {\n    listen 443 ssl;\n    ssl_certificate     /usr/local/nginx/conf/ssl/panel.example.com/fullchain.pem;\n}\n"
+	if got := panelCertDomain([]byte(https)); got != "panel.example.com" {
+		t.Fatalf("got %q", got)
+	}
+	for _, conf := range []string{
+		"server {\n    listen 80;\n}\n",
+		"# ssl_certificate /usr/local/nginx/conf/ssl/panel.example.com/fullchain.pem;\n",
+	} {
+		if got := panelCertDomain([]byte(conf)); got != "" {
+			t.Errorf("%q: 不应判定为启用 HTTPS，got %q", conf, got)
+		}
+	}
+	tmpl, err := os.ReadFile("templates/panel-ssl.conf.tmpl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := strings.ReplaceAll(string(tmpl), "{{.Domain}}", "panel.example.com")
+	if got := panelCertDomain([]byte(rendered)); got != "panel.example.com" {
+		t.Fatalf("模板里的证书路径匹配不到: %q", got)
+	}
+}
+
 func TestWaitTCPPort(t *testing.T) {
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {

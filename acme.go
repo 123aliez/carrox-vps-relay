@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"time"
 )
 
@@ -132,4 +133,51 @@ func renewExpiringCerts() {
 			log.Printf("[auto-renew] %s: renewed OK", s.Domain)
 		}
 	}
+	renewPanelCert()
+}
+
+// 面板不在 scanSites 的范围内，启用 HTTPS 后要单独续期。
+var panelCertRE = regexp.MustCompile(`(?m)^[ \t]*ssl_certificate[ \t]+\S*/ssl/([^/\s]+)/fullchain\.pem[ \t]*;`)
+
+func panelCertDomain(conf []byte) string {
+	m := panelCertRE.FindSubmatch(conf)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
+}
+
+func renewPanelCert() {
+	conf, err := os.ReadFile(filepath.Join(confDir, "relay-panel.conf"))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("[auto-renew] panel conf: %v", err)
+		}
+		return
+	}
+	domain := panelCertDomain(conf)
+	if domain == "" {
+		return
+	}
+	_, days, err := certInfo(domain)
+	if err != nil {
+		log.Printf("[auto-renew] %s: read cert: %v", domain, err)
+		return
+	}
+	if days > renewThresholdDays {
+		return
+	}
+	cfTok := cfTokenForKey("admin")
+	if cfTok == "" {
+		log.Printf("[auto-renew] %s: skip — no CF token for admin", domain)
+		return
+	}
+	log.Printf("[auto-renew] %s: %d days left, renewing…", domain, days)
+	siteMutationMu.Lock()
+	defer siteMutationMu.Unlock()
+	if err := acmeRenew(domain, cfTok, "admin"); err != nil {
+		log.Printf("[auto-renew] %s: renew failed: %v", domain, err)
+		return
+	}
+	log.Printf("[auto-renew] %s: renewed OK", domain)
 }
