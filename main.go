@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	version    = "M14"
+	version    = "M14.1"
 	listenAddr = "127.0.0.1:8787"
 )
 
