@@ -300,7 +300,7 @@ func syncXrayMaterial(material *realityMaterial, p xrayPaths, fs relayFS, check 
 	if err := securePrivateDir(fs, p.root); err != nil {
 		return err
 	}
-	candidate := p.config() + ".candidate"
+	candidate := filepath.Join(p.root, "config.candidate.json")
 	defer fs.remove(candidate)
 	validate := func(data []byte) (bool, error) {
 		if err := fs.write(candidate, data, 0600); err != nil {

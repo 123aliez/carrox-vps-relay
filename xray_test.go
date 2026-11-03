@@ -269,7 +269,7 @@ func TestM15XraySyncExcludesInactiveAndRecoversAfterValidationFailure(t *testing
 	if !sites[0].RealityPaused || strings.Contains(sites[0].RealityError, fixtureBackendUUID) {
 		t.Fatal("校验失败应显示脱敏暂停状态", sites)
 	}
-	if _, err := os.Stat(xp.config() + ".candidate"); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(xp.root, "config.candidate.json")); !os.IsNotExist(err) {
 		t.Fatal("候选机密文件未清理")
 	}
 	if err := syncRelayConfig(p, fs, xp, check); err != nil {
@@ -298,6 +298,66 @@ func TestM15XraySyncExcludesInactiveAndRecoversAfterValidationFailure(t *testing
 		t.Fatal("没有入口时应要求停止 Xray", err)
 	}
 	requireBytes(t, readTestFile(t, p.derived()[0]), []byte{})
+}
+
+// 通过同步函数产生真实候选文件，再调用 Xray 的只校验模式，不启动监听。
+func TestM15XrayCandidateRealValidation(t *testing.T) {
+	if _, err := os.Stat("/usr/local/bin/xray"); os.IsNotExist(err) {
+		t.Skip("未安装 /usr/local/bin/xray")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	golden := readTestFile(t, "testdata/m15/xray.json")
+	for _, invalid := range []bool{false, true} {
+		t.Run(map[bool]string{false: "valid", true: "invalid-json"}[invalid], func(t *testing.T) {
+			p, fs := tempXrayPaths(t), liveRelayFS()
+			site := m15Reality()
+			if err := privateJSON(fs, p.keys(), fixtureRealityKeys(t)); err != nil {
+				t.Fatal(err)
+			}
+			if err := saveRealityEntry(p, site.Domain, fixtureRealityEntry(t), fs); err != nil {
+				t.Fatal(err)
+			}
+			var candidate string
+			checks := 0
+			check := func(path string) error {
+				candidate, checks = path, checks+1
+				requireBytes(t, readTestFile(t, path), golden)
+				if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0600 {
+					t.Fatal("候选文件权限必须为 0600", err)
+				}
+				if invalid {
+					if err := atomicWrite(path, []byte(`{"test_only_secret":"broken-json"`), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				err := testXrayConfig(path)
+				if !invalid && err != nil {
+					t.Fatal("真实 Xray 未接受有效夹具候选配置", err)
+				}
+				if invalid && (err == nil || err.Error() != "Xray 配置校验失败") {
+					t.Fatal("损坏的 JSON 必须校验失败且不回显输出", err)
+				}
+				return err
+			}
+			if err := syncXrayConfig([]SiteMeta{site}, p, fs, check); err != nil {
+				t.Fatal(err)
+			}
+			if checks == 0 {
+				t.Fatal("未执行真实候选配置校验")
+			}
+			if _, err := os.Stat(candidate); !os.IsNotExist(err) {
+				t.Fatal("候选文件未清理", err)
+			}
+			if invalid {
+				if _, err := os.Stat(p.config()); !os.IsNotExist(err) {
+					t.Fatal("无效候选配置不得发布", err)
+				}
+			} else {
+				requireBytes(t, readTestFile(t, p.config()), golden)
+			}
+		})
+	}
 }
 
 type fakeXrayChild struct {
