@@ -54,19 +54,6 @@ func TestValidateTCPUpstream(t *testing.T) {
 	}
 }
 
-func TestValidateTCPListenPort(t *testing.T) {
-	for _, port := range []int{tcpPortMin, 24443, 29999, 31000, tcpPortMax} {
-		if err := validateTCPListenPort(port); err != nil {
-			t.Errorf("%d: %v", port, err)
-		}
-	}
-	for _, port := range []int{-1, 22, 80, 443, 1023, 8443, 30000, 30001, 30500, 30999, 65536} {
-		if err := validateTCPListenPort(port); err == nil {
-			t.Errorf("%d 应该被拒绝", port)
-		}
-	}
-}
-
 type portCheckListener struct {
 	net.Listener
 	closed bool

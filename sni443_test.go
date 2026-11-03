@@ -210,7 +210,7 @@ func adminRequest(method, path string, body io.Reader) *http.Request {
 	r := httptest.NewRequest(method, path, body)
 	return r.WithContext(context.WithValue(context.WithValue(r.Context(), ctxRole, "admin"), ctxKeyID, "admin"))
 }
-func TestM15RealityHandlersAndReservedPorts(t *testing.T) {
+func TestM15RealityHandlers(t *testing.T) {
 	for _, handler := range []http.HandlerFunc{realityCreate, realityStatus, realityLink} {
 		w := httptest.NewRecorder()
 		handler(w, httptest.NewRequest("GET", "/", nil))
@@ -237,11 +237,6 @@ func TestM15RealityHandlersAndReservedPorts(t *testing.T) {
 		handler(w, r)
 		if w.Code != 403 {
 			t.Fatal("Reality 入口只能由管理员操作", w.Code)
-		}
-	}
-	for _, port := range []int{8443, 30000, 30500, 30999} {
-		if validateTCPListenPort(port) == nil {
-			t.Fatal(port)
 		}
 	}
 }

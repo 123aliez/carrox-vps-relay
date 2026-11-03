@@ -19,7 +19,6 @@ import (
 
 const (
 	streamDir       = "/usr/local/nginx/conf/stream.d"
-	tcpPortMin      = 1024
 	tcpPortMax      = 65535
 	tcpLabelMax     = 64
 	tcpLinkMax      = 2048
@@ -83,16 +82,6 @@ func validateTCPUpstream(host string, port int, edge string) error {
 	return nil
 }
 
-func validateTCPListenPort(port int) error {
-	if port == 8443 || (port >= realityPortMin && port <= realityPortMax) {
-		return errors.New("入口端口为本机内部监听保留")
-	}
-	if port < tcpPortMin || port > tcpPortMax {
-		return fmt.Errorf("入口端口须在 %d-%d 之间", tcpPortMin, tcpPortMax)
-	}
-	return nil
-}
-
 func validateTCPLabel(label string) error {
 	if utf8.RuneCountInString(label) > tcpLabelMax {
 		return fmt.Errorf("备注不能超过 %d 个字符", tcpLabelMax)
@@ -132,11 +121,6 @@ func tcpPortAvailableWith(port int, stat func(string) (os.FileInfo, error), list
 	}
 	_ = ln.Close()
 	return nil
-}
-
-func hostStreamEnabled() bool {
-	conf, err := os.ReadFile(hostNginxConf)
-	return err == nil && streamEnabled(conf)
 }
 
 func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
