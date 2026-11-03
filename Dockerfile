@@ -5,6 +5,15 @@ FROM golang:1.22-alpine AS builder
 ENV CGO_ENABLED=0 \
     GO111MODULE=on
 
+# 仅下载固定版本的 Xray 可执行文件，不携带地理数据文件。
+RUN apk add --no-cache curl unzip \
+    && curl -fL --retry 3 -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/download/v26.10.31/Xray-linux-64.zip \
+    && echo 'e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214  /tmp/xray.zip' | sha256sum -c - \
+    && mkdir -p /out \
+    && unzip -p /tmp/xray.zip xray > /out/xray \
+    && chmod 0755 /out/xray \
+    && rm /tmp/xray.zip
+
 WORKDIR /src
 
 # Cache deps first
@@ -42,6 +51,7 @@ RUN apk add --no-cache \
 
 # Binary + helpers
 COPY --from=builder /out/vps-relay /usr/local/bin/vps-relay
+COPY --from=builder /out/xray /usr/local/bin/xray
 COPY scripts/relay-acme.sh         /usr/local/bin/relay-acme
 
 # Static + templates

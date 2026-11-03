@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +39,11 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/sites/{domain}", auth(sitesEdit))
 	mux.HandleFunc("POST /api/sites/{domain}/toggle", auth(sitesToggle))
 	mux.HandleFunc("DELETE /api/sites/{domain}", auth(sitesDelete))
+
+	// Reality 入口仅供管理员使用。
+	mux.HandleFunc("GET /api/reality", auth(realityStatus))
+	mux.HandleFunc("POST /api/reality", auth(realityCreate))
+	mux.HandleFunc("GET /api/reality/{domain}/link", auth(realityLink))
 
 	// TCP forwards (admin only).
 	mux.HandleFunc("GET /api/tcp-forwards", auth(tcpForwardsList))
@@ -78,6 +84,11 @@ func cfTokenStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func cfTokenSave(w http.ResponseWriter, r *http.Request) {
+	unlock, ok := lockSiteRequest(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	var body struct {
 		Token string `json:"token"`
 	}
@@ -180,8 +191,11 @@ type createReq struct {
 }
 
 func sitesCreate(w http.ResponseWriter, r *http.Request) {
-	siteMutationMu.Lock()
-	defer siteMutationMu.Unlock()
+	unlock, ok := lockSiteRequest(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	var req createReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -227,6 +241,9 @@ func sitesCreate(w http.ResponseWriter, r *http.Request) {
 		V: 2, Domain: req.Domain, Upstream: req.Upstream,
 		Owner: keyID, Created: time.Now().UTC().Format(time.RFC3339),
 	}
+	if !prepareNginxMutation(w) {
+		return
+	}
 	meta, err = provisionSite(meta, tok, edge, *zone, liveSiteLifecycle())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
@@ -236,6 +253,9 @@ func sitesCreate(w http.ResponseWriter, r *http.Request) {
 
 	site := Site{SiteMeta: meta, ConfPath: target, Enabled: true}
 	probeSite(&site)
+	if !completeNginxRequest(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, site)
 }
 
@@ -246,8 +266,11 @@ type editReq struct {
 }
 
 func sitesEdit(w http.ResponseWriter, r *http.Request) {
-	siteMutationMu.Lock()
-	defer siteMutationMu.Unlock()
+	unlock, ok := lockSiteRequest(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	domain := strings.ToLower(r.PathValue("domain"))
 	if err := validateDomain(domain); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -261,9 +284,20 @@ func sitesEdit(w http.ResponseWriter, r *http.Request) {
 	if _, err := os.Stat(cur); err == nil {
 		fromPath = cur
 	} else if _, err := os.Stat(cur + ".disabled"); err == nil {
-		writeErr(w, http.StatusUnprocessableEntity, "站点已停用，请先启用再编辑")
-		return
+		fromPath = cur + ".disabled"
 	} else {
+		path, staged, pathErr := resolveSiteDeletePath(cur)
+		if pathErr == nil && staged {
+			pending, readErr := readSiteMeta(path + tcpDeleteSuffix)
+			if readErr == nil && pending.Reality != nil {
+				if !isAdmin {
+					writeErr(w, 403, "无权操作此站点")
+				} else {
+					writeErr(w, 422, "Reality 入口请删除重建")
+				}
+				return
+			}
+		}
 		writeErr(w, http.StatusNotFound, "站点不存在")
 		return
 	}
@@ -272,8 +306,17 @@ func sitesEdit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "读取元数据失败: "+err.Error())
 		return
 	}
-	if !isAdmin && meta.Owner != keyID {
+	if !isAdmin && (meta.Reality != nil || meta.Owner != keyID) {
 		writeErr(w, http.StatusForbidden, "无权操作此站点")
+		return
+	}
+
+	if err := realityEditError(meta); err != nil {
+		writeErr(w, 422, err.Error())
+		return
+	}
+	if strings.HasSuffix(fromPath, ".disabled") {
+		writeErr(w, 422, "站点已停用，请先启用再编辑")
 		return
 	}
 
@@ -296,38 +339,29 @@ func sitesEdit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "渲染配置失败: "+err.Error())
 		return
 	}
-	// Backup → write new → syntax check → reload; on failure restore.
-	bak := fromPath + ".relay.bak"
-	if err := copyFile(fromPath, bak); err != nil {
-		writeErr(w, http.StatusInternalServerError, "备份失败: "+err.Error())
+	if !prepareNginxMutation(w) {
 		return
 	}
-	if err := atomicWrite(fromPath, rendered, 0o644); err != nil {
-		_ = os.Rename(bak, fromPath)
-		writeErr(w, http.StatusInternalServerError, "写入配置失败: "+err.Error())
+	if status, err := commitSiteEdit(fromPath, rendered, liveSiteEditOps()); err != nil {
+		writeErr(w, status, err.Error())
 		return
 	}
-	if err := nginxSyntaxCheck(); err != nil {
-		_ = os.Rename(bak, fromPath)
-		writeErr(w, http.StatusUnprocessableEntity, err.Error())
-		return
-	}
-	if err := nginxReload(); err != nil {
-		_ = os.Rename(bak, fromPath)
-		writeErr(w, http.StatusInternalServerError, "reload 失败: "+err.Error())
-		return
-	}
-	_ = os.Remove(bak)
 	site := Site{SiteMeta: meta, ConfPath: fromPath, Enabled: true}
 	probeSite(&site)
+	if !completeNginxRequest(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, site)
 }
 
 // --- toggle (enable/disable) ---
 
 func sitesToggle(w http.ResponseWriter, r *http.Request) {
-	siteMutationMu.Lock()
-	defer siteMutationMu.Unlock()
+	unlock, ok := lockSiteRequest(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	domain := strings.ToLower(r.PathValue("domain"))
 	if err := validateDomain(domain); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -352,22 +386,40 @@ func sitesToggle(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "读取元数据失败: "+err.Error())
 		return
 	}
-	if !isAdmin && meta.Owner != keyID {
+	if !isAdmin && (meta.Reality != nil || meta.Owner != keyID) {
 		writeErr(w, http.StatusForbidden, "无权操作此站点")
 		return
 	}
-	if err := os.Rename(fromPath, newPath); err != nil {
+	if !prepareNginxMutation(w) {
+		return
+	}
+	if err := renameNginxFile(fromPath, newPath); err != nil {
 		writeErr(w, http.StatusInternalServerError, "重命名失败: "+err.Error())
 		return
 	}
 	if err := nginxSyntaxCheck(); err != nil {
-		_ = os.Rename(newPath, fromPath)
-		writeErr(w, http.StatusUnprocessableEntity, err.Error())
+		restoreErr := renameNginxFile(newPath, fromPath)
+		if restoreErr == nil {
+			restoreErr = restoreRelayRuntime()
+		}
+		if restoreErr == nil {
+			markNginxConsistent()
+		}
+		writeErr(w, http.StatusUnprocessableEntity, errors.Join(err, restoreErr).Error())
 		return
 	}
 	if err := nginxReload(); err != nil {
-		_ = os.Rename(newPath, fromPath)
-		writeErr(w, http.StatusInternalServerError, "reload 失败: "+err.Error())
+		restoreErr := renameNginxFile(newPath, fromPath)
+		if restoreErr == nil {
+			restoreErr = restoreRelayRuntime()
+		}
+		if restoreErr == nil {
+			markNginxConsistent()
+		}
+		writeErr(w, http.StatusInternalServerError, errors.Join(err, restoreErr).Error())
+		return
+	}
+	if !completeNginxRequest(w) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -379,8 +431,11 @@ func sitesToggle(w http.ResponseWriter, r *http.Request) {
 // --- delete ---
 
 func sitesDelete(w http.ResponseWriter, r *http.Request) {
-	siteMutationMu.Lock()
-	defer siteMutationMu.Unlock()
+	unlock, ok := lockSiteRequest(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	domain := strings.ToLower(r.PathValue("domain"))
 	if err := validateDomain(domain); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -407,7 +462,7 @@ func sitesDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "读取元数据失败: "+err.Error())
 		return
 	}
-	if !isAdmin && meta.Owner != keyID {
+	if !isAdmin && (meta.Reality != nil || meta.Owner != keyID) {
 		writeErr(w, http.StatusForbidden, "无权操作此站点")
 		return
 	}
@@ -416,11 +471,17 @@ func sitesDelete(w http.ResponseWriter, r *http.Request) {
 		owner = "admin"
 	}
 	meta.Owner = owner
+	if !prepareNginxMutation(w) {
+		return
+	}
 	if err := removeManagedSite(meta, cfTokenForKey(owner), path, staged, liveSiteLifecycle()); err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 
+	if !completeNginxRequest(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": domain})
 }
 
@@ -435,8 +496,11 @@ type adoptReq struct {
 }
 
 func sitesAdopt(w http.ResponseWriter, r *http.Request) {
-	siteMutationMu.Lock()
-	defer siteMutationMu.Unlock()
+	unlock, ok := lockSiteRequest(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	var req adoptReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -454,13 +518,19 @@ func sitesAdopt(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "conf_path required")
 		return
 	}
-	if !strings.HasPrefix(req.ConfPath, confDir+"/") {
-		writeErr(w, http.StatusBadRequest, "conf_path must live in "+confDir)
+	source, err := adoptSourcePath(req.ConfPath)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	req.ConfPath = source
 	src, err := os.ReadFile(req.ConfPath)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "读取源配置失败: "+err.Error())
+		return
+	}
+	if filepath.Base(source) == "relay-panel.conf" || metaRE.Match(src) || bytes.Contains(src, []byte(relayHead)) {
+		writeErr(w, 422, "已托管的站点或面板配置不能再次接管，请使用对应管理接口")
 		return
 	}
 	target := confPath(req.Domain)
@@ -469,7 +539,10 @@ func sitesAdopt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bak := req.ConfPath + ".pre-adopt.bak"
-	if err := atomicWrite(bak, src, 0o644); err != nil {
+	if !prepareNginxMutation(w) {
+		return
+	}
+	if err := writeNginxFile(bak, src, 0o644); err != nil {
 		writeErr(w, http.StatusInternalServerError, "备份失败: "+err.Error())
 		return
 	}
@@ -483,18 +556,25 @@ func sitesAdopt(w http.ResponseWriter, r *http.Request) {
 		relayHead, mustJSON(meta))
 	merged := []byte(header)
 	merged = append(merged, src...)
-	if err := atomicWrite(target, merged, 0o644); err != nil {
-		_ = os.Remove(bak)
+	if err := writeNginxFile(target, merged, 0o644); err != nil {
+		_ = removeNginxFile(bak)
 		writeErr(w, http.StatusInternalServerError, "写入托管配置失败: "+err.Error())
 		return
 	}
 	if req.ConfPath != target {
-		_ = os.Remove(req.ConfPath)
+		_ = removeNginxFile(req.ConfPath)
 	}
 	if err := nginxSyntaxCheck(); err != nil {
-		_ = os.Remove(target)
-		_ = atomicWrite(req.ConfPath, src, 0o644)
-		writeErr(w, http.StatusUnprocessableEntity, err.Error())
+		removeErr := removeNginxFile(target)
+		restoreErr := writeNginxFile(req.ConfPath, src, 0o644)
+		var reloadErr error
+		if removeErr == nil && restoreErr == nil {
+			reloadErr = nginxReload()
+		}
+		if removeErr == nil && restoreErr == nil && reloadErr == nil {
+			markNginxConsistent()
+		}
+		writeErr(w, http.StatusUnprocessableEntity, errors.Join(err, removeErr, restoreErr, reloadErr).Error())
 		return
 	}
 	if err := nginxReload(); err != nil {
@@ -503,6 +583,9 @@ func sitesAdopt(w http.ResponseWriter, r *http.Request) {
 	}
 	site := Site{SiteMeta: meta, ConfPath: target, Enabled: true}
 	probeSite(&site)
+	if !completeNginxRequest(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, site)
 }
 
@@ -521,6 +604,11 @@ func keysCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "需要管理员权限")
 		return
 	}
+	unlock, ok := lockSiteRequest(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	var body struct {
 		ID   string `json:"id"`
 		Role string `json:"role"`
@@ -550,6 +638,11 @@ func keysDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "需要管理员权限")
 		return
 	}
+	unlock, ok := lockSiteRequest(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	keyID := strings.TrimSpace(r.PathValue("key_id"))
 	if keyID == "" {
 		writeErr(w, http.StatusBadRequest, "key_id required")
@@ -619,7 +712,11 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(dst, b, 0o644)
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(dst, b, info.Mode().Perm())
 }
 
 func mustJSON(v any) string {
@@ -628,4 +725,66 @@ func mustJSON(v any) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// 接管只允许 conf.d 的普通配置文件，防止越界读取机密或通过重命名绕过站点权限。
+func adoptSourcePath(path string) (string, error) {
+	root, err := filepath.Abs(confDir)
+	if err != nil {
+		return "", errors.New("配置目录无效")
+	}
+	if !filepath.IsAbs(path) || filepath.Dir(filepath.Clean(path)) != root || filepath.Ext(path) != ".conf" {
+		return "", errors.New("接管源必须是 conf.d 内的普通 .conf 文件")
+	}
+	path = filepath.Clean(path)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("接管源不存在或不是普通配置文件")
+	}
+	return path, nil
+}
+
+// 编辑事务的文件及重载操作可注入，以核对磁盘与最后一次成功 HUP 的内容一致。
+type siteEditOps struct {
+	copy          func(string, string) error
+	write         func(string, []byte, os.FileMode) error
+	rename        func(string, string) error
+	remove        func(string) error
+	check, reload func() error
+	consistent    func()
+}
+
+func liveSiteEditOps() siteEditOps {
+	return siteEditOps{copy: copyNginxFile, write: writeNginxFile, rename: renameNginxFile, remove: removeNginxFile, check: nginxSyntaxCheck, reload: nginxReload, consistent: markNginxConsistent}
+}
+func commitSiteEdit(path string, data []byte, ops siteEditOps) (int, error) {
+	backup := path + ".relay.bak"
+	if err := ops.copy(path, backup); err != nil {
+		return 500, fmt.Errorf("备份失败: %w", err)
+	}
+	rollback := func(cause error) error {
+		if err := ops.rename(backup, path); err != nil {
+			return errors.Join(cause, err)
+		}
+		if err := ops.reload(); err != nil {
+			return errors.Join(cause, err)
+		}
+		if ops.consistent != nil {
+			ops.consistent()
+		}
+		return cause
+	}
+	if err := ops.write(path, data, 0644); err != nil {
+		return 500, rollback(err)
+	}
+	if err := ops.check(); err != nil {
+		return 422, rollback(err)
+	}
+	if err := ops.reload(); err != nil {
+		return 500, rollback(err)
+	}
+	if err := ops.remove(backup); err != nil {
+		return 500, err
+	}
+	return 200, nil
 }

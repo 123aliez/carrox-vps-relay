@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	keysPath    = "/etc/vps-relay/keys.json"
-	cookieName  = "vps-relay-auth"
+	keysPath     = "/etc/vps-relay/keys.json"
+	cookieName   = "vps-relay-auth"
 	cookieMaxAge = 7 * 24 * time.Hour
 
 	failWindow    = 5 * time.Minute
@@ -59,6 +59,13 @@ func loadKeyTable() {
 	if err != nil {
 		if !os.IsNotExist(err) {
 			log.Fatalf("read keys.json (%s): %v", keysPath, err)
+		}
+		if err := ensureNoSNIMigration(); err != nil {
+			keyTableMu.Lock()
+			keyTable = map[string]*KeyEntry{}
+			keyTableMu.Unlock()
+			log.Print("！！！迁移未完成，暂停初始化管理员密钥")
+			return
 		}
 		// First start — auto-generate admin key.
 		key := generateKey()

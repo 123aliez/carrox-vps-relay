@@ -17,8 +17,9 @@ import (
 	"time"
 )
 
+var confDir = "/usr/local/nginx/conf/conf.d"
+
 const (
-	confDir   = "/usr/local/nginx/conf/conf.d"
 	sslDir    = "/usr/local/nginx/conf/ssl"
 	relayHead = "# ====== vps-relay managed: DO NOT HAND EDIT ======"
 )
@@ -26,22 +27,25 @@ const (
 // On-disk JSON header stored in the conf file: every byte of authoritative
 // state we keep (cf record ids, original upstream, creation timestamp).
 type SiteMeta struct {
-	V                int        `json:"v"`
-	Domain           string     `json:"domain"`
-	Upstream         string     `json:"upstream"`
-	Owner            string     `json:"owner,omitempty"`
-	CFZone           string     `json:"cf_zone"`
-	CFRecordID       string     `json:"cf_record_id"`
-	CFRecordIDV6     string     `json:"cf_record_id_v6,omitempty"`
-	Created          string     `json:"created"`
-	DNS              *DNSChange `json:"dns,omitempty"`
-	CertificateOwned bool       `json:"certificate_owned,omitempty"`
+	Reality          *RealityMeta `json:"reality,omitempty"`
+	V                int          `json:"v"`
+	Domain           string       `json:"domain"`
+	Upstream         string       `json:"upstream"`
+	Owner            string       `json:"owner,omitempty"`
+	CFZone           string       `json:"cf_zone"`
+	CFRecordID       string       `json:"cf_record_id"`
+	CFRecordIDV6     string       `json:"cf_record_id_v6,omitempty"`
+	Created          string       `json:"created"`
+	DNS              *DNSChange   `json:"dns,omitempty"`
+	CertificateOwned bool         `json:"certificate_owned,omitempty"`
 }
 
 // Site is what the API returns: meta + runtime probes.
 type Site struct {
 	SiteMeta
 
+	RealityError    string `json:"reality_error,omitempty"`
+	RealityPaused   bool   `json:"reality_paused,omitempty"`
 	Enabled         bool   `json:"enabled"`
 	DeletionPending bool   `json:"deletion_pending,omitempty"`
 	ConfPath        string `json:"-"`
@@ -86,6 +90,9 @@ func scanSites(keyID string, isAdmin bool) ([]Site, []string, error) {
 		// Ownership filter: admin sees all; user sees only their own sites.
 		// Sites without an owner field are treated as admin-owned.
 		if !isAdmin {
+			if meta.Reality != nil {
+				continue
+			}
 			owner := meta.Owner
 			if owner == "" {
 				owner = "admin"
@@ -115,8 +122,8 @@ func scanSites(keyID string, isAdmin bool) ([]Site, []string, error) {
 func filterPanel(in []string) []string {
 	out := in[:0]
 	for _, p := range in {
-		name := strings.TrimSuffix(filepath.Base(p), ".relay-delete.bak")
-		if name == "relay-panel.conf" || name == "relay-panel.conf.disabled" {
+		name := strings.TrimSuffix(strings.TrimSuffix(filepath.Base(p), ".relay-delete.bak"), ".disabled")
+		if name == "relay-panel.conf" || name == sniDefaultName {
 			continue
 		}
 		out = append(out, p)
@@ -159,7 +166,11 @@ func probeSite(s *Site) {
 		s.DNSResolvedTo = ip
 	}
 	// Upstream
-	s.UpstreamOK = httpReachable(s.Upstream, 3*time.Second)
+	if s.Reality != nil {
+		s.UpstreamOK = tcpDial(net.JoinHostPort(s.Reality.UpstreamHost, fmt.Sprint(s.Reality.UpstreamPort)), 3*time.Second)
+	} else {
+		s.UpstreamOK = httpReachable(s.Upstream, 3*time.Second)
+	}
 	// Edge
 	s.EdgeOK = httpReachable("https://"+s.Domain+"/", 3*time.Second)
 }

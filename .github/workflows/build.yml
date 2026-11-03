@@ -18,8 +18,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: 格式检查（新增文件）
-        run: test -z "$(gofmt -l tcpforward.go tcpforward_test.go)"
+      - name: 格式检查（所有 Go 文件）
+        run: test -z "$(gofmt -l .)"
 
       - name: 静态检查
         run: go vet ./...
@@ -41,10 +41,14 @@ jobs:
             test -f /opt/vps-relay/templates/tcp.conf.tmpl
           '
 
+      - name: 冒烟测试：SNI 分流、伪装站和 Xray 配置
+        run: |
+          docker run --rm --entrypoint sh -v "$PWD/testdata/m15:/fixtures:ro" -v "$PWD/scripts/smoke-sni443.sh:/smoke-sni443.sh:ro" vps-relay:${{ github.sha }} /smoke-sni443.sh
+
       - name: 导出镜像
         run: |
-          docker tag vps-relay:${{ github.sha }} vps-relay:m14
-          docker save vps-relay:m14 | gzip > vps-relay-image.tar.gz
+          docker tag vps-relay:${{ github.sha }} vps-relay:m15
+          docker save vps-relay:m15 | gzip > vps-relay-image.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:

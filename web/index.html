@@ -188,6 +188,7 @@
           <div class="site" :class="{disabled: !s.enabled}">
             <div class="site-head">
               <span class="dom" x-text="s.domain"></span>
+              <template x-if="s.reality"><span class="pill muted small">Reality</span></template>
               <span class="ups">→ <span x-text="s.upstream"></span></span>
               <template x-if="s.enabled"><span class="pill ok">启用</span></template>
               <template x-if="!s.enabled && !s.deletion_pending"><span class="pill muted">停用</span></template>
@@ -208,7 +209,7 @@
               <span x-text="'created ' + (s.created || '?')"></span>
             </div>
             <div class="actions">
-              <button class="secondary small" @click="startEdit(s)" :disabled="!!s.deletion_pending">编辑</button>
+              <template x-if="!s.reality"><button class="secondary small" @click="startEdit(s)" :disabled="!!s.deletion_pending">编辑</button></template>
               <button class="secondary small" @click="toggleSite(s)" :disabled="!!s.deletion_pending"
                       x-text="s.enabled ? '停用' : '启用'"></button>
               <button class="danger small" @click="deleteSite(s)">删除</button>
@@ -301,10 +302,78 @@
         </div>
       </template>
 
-      <!-- ⑤ Key management (admin only) -->
+      <!-- ⑤ Reality 入口，仅管理员可用。 -->
       <template x-if="role === 'admin'">
         <div class="card">
-          <h2>⑤ 密钥管理
+          <h2>⑤ Reality 入口（共用 443）
+            <span class="pill small" :class="sniEnabled ? 'ok' : 'muted'" x-text="sniEnabled ? 'SNI 已开启' : 'SNI 未开启'"></span>
+            <span class="pill small" :class="xrayRunning ? 'ok' : 'muted'" x-text="xrayRunning ? 'Xray 运行中' : 'Xray 未就绪'"></span>
+            <span class="small muted" x-show="xrayError" x-text="xrayError"></span>
+            <span class="right"><button class="secondary small" @click="loadReality(); reloadSites()">刷新</button></span>
+          </h2>
+          <template x-if="!sniEnabled">
+            <div class="err-banner">需先执行迁移命令：<code>docker exec vps-relay vps-relay sni443 enable</code></div>
+          </template>
+          <p class="muted small">后端不需要任何改动；客户端使用导出的新链接（Clash/mihomo 需开启 reality-opts.support-x25519mlkem768）。</p>
+          <template x-if="realityError"><div class="err-banner" x-text="realityError"></div></template>
+          <fieldset :disabled="!sniEnabled || realityBusy" style="border:0; padding:0; margin:0;">
+            <div class="row">
+              <div>
+                <label>专用子域名</label>
+                <div class="domain-parts">
+                  <input type="text" x-model="realitySub" placeholder="入口前缀" />
+                  <select x-model="realityZone">
+                    <option value="">选择 Zone…</option>
+                    <template x-for="z in zones" :key="z.id"><option :value="z.name" x-text="z.name"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div><label>备注</label><input type="text" maxlength="64" x-model="realityLabel" /></div>
+            </div>
+            <label style="margin-top:0.65rem;">后端 vless 链接</label>
+            <input type="password" autocomplete="off" spellcheck="false" x-model="realitySource" placeholder="vless://…" />
+            <button style="margin-top:0.65rem;" @click="createReality()" :disabled="realityBusy || !sniEnabled || !realitySub || !realityZone || !realitySource || !cfReady"
+                    x-text="realityBusy ? '创建中…' : '创建入口'"></button>
+          </fieldset>
+          <template x-if="realityExport">
+            <div class="ok-banner" style="margin-top:0.75rem;">
+              <strong>导出链接（含节点凭据，请勿外传）：</strong>
+              <code style="display:block; margin:0.35rem 0; word-break:break-all;" x-text="realityExport"></code>
+              <button class="secondary small" @click="copyRealityLink()">复制</button>
+              <button class="secondary small" @click="realityExport=''">关闭</button>
+            </div>
+          </template>
+          <template x-if="realitySites.length === 0"><p class="muted small">暂无 Reality 入口。</p></template>
+          <template x-for="s in realitySites" :key="s.domain">
+            <div class="site" :class="{disabled: !s.enabled}" style="margin-top:0.75rem;">
+              <div class="site-head">
+                <span class="dom" x-text="s.domain"></span>
+                <span class="ups" x-text="s.upstream"></span>
+                <span class="pill small" :class="s.reality_paused ? 'warn' : (s.enabled ? 'ok' : 'muted')" x-text="s.reality_paused ? '暂停' : (s.enabled ? '启用' : '停用')"></span>
+                <template x-if="s.deletion_pending"><span class="pill warn small">删除未完成</span></template>
+                <span class="pill small" :class="s.upstream_ok ? 'ok' : 'err'">upstream</span>
+                <span class="pill small" :class="s.edge_ok ? 'ok' : 'err'">edge</span>
+              </div>
+              <div class="site-meta">
+                <span x-text="'证书 ' + s.cert_days_left + ' 天'"></span> ·
+                <span x-text="'DNS ' + (s.dns_resolved_to || '—')"></span> ·
+                <span x-text="s.reality.label"></span>
+              </div>
+              <template x-if="s.reality_error"><div class="err-banner small" x-text="s.reality_error"></div></template>
+              <div class="actions">
+                <button class="secondary small" @click="showRealityLink(s)">导出链接</button>
+                <button class="secondary small" @click="toggleSite(s)" :disabled="!!s.deletion_pending" x-text="s.enabled ? '停用' : '启用'"></button>
+                <button class="danger small" @click="deleteSite(s)">删除</button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ⑥ 密钥管理，仅管理员可用。 -->
+      <template x-if="role === 'admin'">
+        <div class="card">
+          <h2>⑥ 密钥管理
             <span class="pill muted small" x-text="(keys.length || 0) + ' 个'"></span>
             <span class="right">
               <button class="secondary small" @click="loadKeys()">刷新</button>
@@ -376,6 +445,10 @@ function app() {
     // TCP forwards (admin)
     tcpEnabled: true, tcpLoaded: false, tcpError: '', tcpForwards: [], tcpWarnings: [], tcpSource: '', tcpPort: '', tcpLabel: '', tcpBusy: false, tcpLink: '',
 
+    // Reality 入口：凭据只保存在当前会话，退出时清空。
+    sniEnabled: false, xrayRunning: false, xrayError: '', realitySites: [], realitySub: '', realityZone: '', realityLabel: '', realitySource: '', realityBusy: false, realityError: '', realityExport: '',
+    get cfReady() { return !!this.cfStatus.configured; },
+
     flashIt(msg, ok=true) { this.flash = msg; this.flashOk = ok; setTimeout(()=>this.flash='', 5000); },
 
     async boot() {
@@ -426,6 +499,7 @@ function app() {
       this.role = '';
       this.tcpLink = '';
       this.tcpSource = '';
+      this.realitySource = ''; this.realityExport = ''; this.realitySites = []; this.xrayError = ''; this.xrayRunning = false;
     },
 
     async refresh() {
@@ -433,7 +507,7 @@ function app() {
       // 并发加载：线路慢时串行要等很久，排在后面的区块一直是空的。
       const jobs = [this.loadEdge(), this.reloadSites()];
       if (this.cfStatus.configured) jobs.push(this.loadZones());
-      if (this.role === 'admin') jobs.push(this.loadKeys(), this.loadTcp());
+      if (this.role === 'admin') jobs.push(this.loadKeys(), this.loadTcp(), this.loadReality());
       await Promise.all(jobs);
     },
 
@@ -511,6 +585,7 @@ function app() {
       if (!r.ok) { const j = await r.json().catch(()=>({})); this.flashIt(j.error || 'toggle failed', false); return; }
       this.flashIt((s.enabled ? '已停用 ' : '已启用 ') + s.domain);
       await this.reloadSites();
+      if (s.reality) await this.loadReality();
     },
 
     async deleteSite(s) {
@@ -520,7 +595,53 @@ function app() {
       });
       if (!r.ok) { const j = await r.json().catch(()=>({})); this.flashIt(j.error || '删除失败', false); return; }
       this.flashIt('已删除 ' + s.domain);
+      if (s.reality) this.realityExport = '';
       await this.reloadSites();
+      if (s.reality) await this.loadReality();
+    },
+
+    async loadReality() {
+      try {
+        const r = await fetch('/api/reality', { credentials: 'include' });
+        const j = await r.json().catch(()=>({}));
+        if (!r.ok) { this.realityError = j.error || '读取 SNI 状态失败'; return; }
+        this.sniEnabled = !!j.sni_mode; this.xrayRunning = !!j.xray_running; this.xrayError = j.xray_error || '';
+        this.realitySites = Array.isArray(j.entries) ? j.entries : []; this.realityError = '';
+      } catch(e) { this.realityError = '读取 SNI 状态失败'; }
+    },
+    async createReality() {
+      this.realityBusy = true; this.realityError = ''; this.realityExport = '';
+      try {
+        const r = await fetch('/api/reality', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, credentials: 'include',
+          body: JSON.stringify({ domain: this.realitySub.trim() + '.' + this.realityZone, link: this.realitySource.trim(), label: this.realityLabel.trim() })
+        });
+        const j = await r.json().catch(()=>({}));
+        if (!r.ok) { this.realityError = j.error || '创建失败'; return; }
+        this.realityExport = j.link || ''; this.realitySource = ''; this.realitySub = ''; this.realityLabel = '';
+        this.flashIt('Reality 入口已创建'); await this.reloadSites(); await this.loadReality();
+      } catch(e) { this.realityError = '请求失败，请刷新后检查入口状态'; }
+      finally { this.realityBusy = false; }
+    },
+    async showRealityLink(s) {
+      this.realityError = ''; this.realityExport = '';
+      try {
+        const r = await fetch('/api/reality/' + encodeURIComponent(s.domain) + '/link', { credentials: 'include' });
+        const j = await r.json().catch(()=>({}));
+        if (!r.ok) { this.realityError = j.error || '导出失败'; return; }
+        this.realityExport = j.link || '';
+      } catch(e) { this.realityError = '导出失败'; }
+    },
+    async copyRealityLink() {
+      try {
+        if (navigator.clipboard) { await navigator.clipboard.writeText(this.realityExport); }
+        else {
+          const t = document.createElement('textarea'); t.value = this.realityExport;
+          document.body.appendChild(t); t.select(); const ok = document.execCommand('copy'); t.remove();
+          if (!ok) throw new Error('复制失败');
+        }
+        this.flashIt('已复制');
+      } catch(e) { this.realityError = '复制失败，请手动复制'; }
     },
 
     // ---- TCP forwards ----

@@ -272,7 +272,7 @@ func TestProvisionTCPForwardRollback(t *testing.T) {
 		stage       string
 		wantReloads int
 	}{
-		{"render", 0}, {"writeLink", 0}, {"write", 0}, {"check", 0}, {"reload", 1}, {"wait", 2},
+		{"render", 0}, {"writeLink", 0}, {"write", 0}, {"check", 1}, {"reload", 2}, {"wait", 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.stage, func(t *testing.T) {

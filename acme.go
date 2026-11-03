@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
@@ -62,6 +63,9 @@ func acmeRenew(domain, cfTok, keyID string) error {
 }
 
 func runAcme(domain, action, cfTok, keyID string, timeout time.Duration) error {
+	if err := ensureNoSNIMigration(); err != nil {
+		return err
+	}
 	if err := ensureAcmeHome(keyID); err != nil {
 		return err
 	}
@@ -73,21 +77,47 @@ func runAcme(domain, action, cfTok, keyID string, timeout time.Duration) error {
 		"ACME_HOME="+acmeHome(keyID),
 	)
 
+	if err := runACMEProcess(cmd, timeout); err != nil {
+		return fmt.Errorf("relay-acme %s %s: %w", domain, action, err)
+	}
+	return nil
+}
+
+// 同步启动独立进程组，超时杀死整棵受控进程树并等待退出后才归还调用方的锁。
+func runACMEProcess(cmd *exec.Cmd, timeout time.Duration) error {
+	inherited, err := duplicateConfigLock(confDir)
+	if err != nil {
+		return err
+	}
+	if inherited != nil {
+		defer inherited.Close()
+		cmd.ExtraFiles = []*os.File{inherited}
+		cmd.Env = append(cmd.Environ(), "VPS_RELAY_CONFIG_LOCK_HELD=3")
+	}
+	configureACMEGroup(cmd)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		return err
+	}
 	done := make(chan error, 1)
-	go func() {
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			done <- fmt.Errorf("relay-acme %s %s: %v\n%s", domain, action, err, string(out))
-			return
-		}
-		done <- nil
-	}()
+	go func() { done <- cmd.Wait() }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case err := <-done:
-		return err
-	case <-time.After(timeout):
-		_ = cmd.Process.Kill()
-		return fmt.Errorf("relay-acme %s %s: timed out after %s", domain, action, timeout)
+		// 正常退出也清除可能遗留的后台任务，不让继承的锁逃出事务。
+		killACMEGroup(cmd)
+		waitACMEGroup(cmd.Process.Pid)
+		if err != nil {
+			return fmt.Errorf("命令失败: %v（输出 %d 字节，已脱敏）", err, output.Len())
+		}
+		return nil
+	case <-timer.C:
+		killACMEGroup(cmd)
+		waitACMEGroup(cmd.Process.Pid)
+		<-done
+		return fmt.Errorf("超时（%s），受控进程组已结束", timeout)
 	}
 }
 
@@ -100,6 +130,10 @@ func autoRenewLoop() {
 }
 
 func renewExpiringCerts() {
+	if err := ensureNoSNIMigration(); err != nil {
+		log.Printf("[auto-renew] 迁移未完成，跳过续期及重载：%v", err)
+		return
+	}
 	sites, _, err := scanSites("", true)
 	if err != nil {
 		log.Printf("[auto-renew] scan sites: %v", err)
@@ -120,12 +154,32 @@ func renewExpiringCerts() {
 		}
 		log.Printf("[auto-renew] %s: %d days left, renewing…", s.Domain, s.CertDaysLeft)
 		siteMutationMu.Lock()
+		unlock, lockErr := lockConfigDirectory(confDir)
+		if lockErr != nil {
+			siteMutationMu.Unlock()
+			log.Printf("[auto-renew] 配置正在迁移，延后续期")
+			continue
+		}
+		if pendingErr := ensureNoSNIMigration(); pendingErr != nil {
+			unlock()
+			siteMutationMu.Unlock()
+			log.Printf("[auto-renew] 迁移未完成，跳过续期及重载：%v", pendingErr)
+			continue
+		}
 		_, deleting, pathErr := resolveSiteDeletePath(confPath(s.Domain))
 		if pathErr != nil || deleting {
+			unlock()
 			siteMutationMu.Unlock()
 			continue
 		}
-		err := acmeRenew(s.Domain, cfTok, owner)
+		err := recoverACMETransactions(sniBackupDir, nginxReload, beginNginxMutation)
+		if err == nil {
+			err = reconcileNginxWith(nginxPendingPath(), nginxReload)
+		}
+		if err == nil {
+			err = acmeRenew(s.Domain, cfTok, owner)
+		}
+		unlock()
 		siteMutationMu.Unlock()
 		if err != nil {
 			log.Printf("[auto-renew] %s: renew failed: %v", s.Domain, err)
@@ -148,6 +202,10 @@ func panelCertDomain(conf []byte) string {
 }
 
 func renewPanelCert() {
+	if err := ensureNoSNIMigration(); err != nil {
+		log.Printf("[auto-renew] 迁移未完成，跳过续期及重载：%v", err)
+		return
+	}
 	conf, err := os.ReadFile(filepath.Join(confDir, "relay-panel.conf"))
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -175,7 +233,24 @@ func renewPanelCert() {
 	log.Printf("[auto-renew] %s: %d days left, renewing…", domain, days)
 	siteMutationMu.Lock()
 	defer siteMutationMu.Unlock()
-	if err := acmeRenew(domain, cfTok, "admin"); err != nil {
+	unlock, lockErr := lockConfigDirectory(confDir)
+	if lockErr != nil {
+		log.Printf("[auto-renew] 配置正在迁移，延后面板续期")
+		return
+	}
+	defer unlock()
+	if pendingErr := ensureNoSNIMigration(); pendingErr != nil {
+		log.Printf("[auto-renew] 迁移未完成，跳过面板续期及重载：%v", pendingErr)
+		return
+	}
+	err = recoverACMETransactions(sniBackupDir, nginxReload, beginNginxMutation)
+	if err == nil {
+		err = reconcileNginxWith(nginxPendingPath(), nginxReload)
+	}
+	if err == nil {
+		err = acmeRenew(domain, cfTok, "admin")
+	}
+	if err != nil {
 		log.Printf("[auto-renew] %s: renew failed: %v", domain, err)
 		return
 	}

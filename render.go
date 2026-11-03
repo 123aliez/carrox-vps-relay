@@ -4,7 +4,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -26,6 +28,7 @@ const (
 )
 
 type renderCtx struct {
+	SNI443         bool
 	Domain         string
 	Upstream       string
 	UpstreamScheme string
@@ -72,10 +75,26 @@ func parseUpstream(raw string) (scheme, host string, port int, isIP bool, err er
 }
 
 func renderSite(meta SiteMeta) ([]byte, error) {
-	return renderSiteWithTemplate(meta, templatePath)
+	on, err := sniMode(liveSNIPaths(), liveRelayFS())
+	if err != nil {
+		return nil, err
+	}
+	return renderSiteMode(meta, filepath.Dir(templatePath), on)
+}
+
+func renderSiteMode(meta SiteMeta, dir string, sni bool) ([]byte, error) {
+	name := "site.conf.tmpl"
+	if meta.Reality != nil {
+		name = "reality.conf.tmpl"
+	}
+	return renderSiteTemplateMode(meta, filepath.Join(dir, name), sni)
 }
 
 func renderSiteWithTemplate(meta SiteMeta, path string) ([]byte, error) {
+	return renderSiteTemplateMode(meta, path, false)
+}
+
+func renderSiteTemplateMode(meta SiteMeta, path string, sni bool) ([]byte, error) {
 	scheme, host, port, isIP, err := parseUpstream(meta.Upstream)
 	if err != nil {
 		return nil, err
@@ -85,6 +104,7 @@ func renderSiteWithTemplate(meta SiteMeta, path string) ([]byte, error) {
 		return nil, fmt.Errorf("read template: %w", err)
 	}
 	ctx := renderCtx{
+		SNI443:         sni,
 		Domain:         meta.Domain,
 		Upstream:       meta.Upstream,
 		UpstreamScheme: scheme,
@@ -115,6 +135,13 @@ func confPath(domain string) string {
 // the container image ships; it parses the same set of directives we use in
 // templates so this is a sound syntax gate.
 func nginxSyntaxCheck() error {
+	if err := syncSNI443(); err != nil {
+		return err
+	}
+	return nginxSyntaxCheckRaw()
+}
+
+func nginxSyntaxCheckRaw() error {
 	ctx, cancel := contextWithTimeout(8 * time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx,
@@ -130,6 +157,29 @@ func nginxSyntaxCheck() error {
 
 // nginxReload sends SIGHUP to the host nginx master via its pid file.
 func nginxReload() error {
+	return nginxReloadWith(nginxSyntaxCheck, nginxReloadRaw, applyXrayRuntime, log.Print)
+}
+
+// HUP 成功后不能向普通配置事务报告失败，Xray 的失败由托管进程退避恢复。
+func nginxReloadWith(syncConfig, hup, apply func() error, report func(...any)) error {
+	if err := syncConfig(); err != nil {
+		return err
+	}
+	if err := hup(); err != nil {
+		return err
+	}
+	if err := apply(); err != nil {
+		var failure *xrayApplyFailure
+		if errors.As(err, &failure) && failure.submitted {
+			report("警告：Nginx 已重载，Xray 监督器已接收配置，正在退避重试：", err)
+		} else {
+			report("警告：Nginx 已重载，Xray 配置尚未提交；面板服务运行时每 30 秒对账补偿：", err)
+		}
+	}
+	return nil
+}
+
+func nginxReloadRaw() error {
 	b, err := os.ReadFile(nginxPidPath)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", nginxPidPath, err)
@@ -138,6 +188,9 @@ func nginxReload() error {
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
 		return fmt.Errorf("parse pid %q: %w", pidStr, err)
+	}
+	if pid <= 1 {
+		return fmt.Errorf("Nginx master PID 无效")
 	}
 	proc, err := os.FindProcess(pid)
 	if err != nil {
@@ -149,4 +202,24 @@ func nginxReload() error {
 // contextWithTimeout is a tiny shim so test code can swap context implementations.
 func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), d)
+}
+
+// 面板的传统模板继续供安装脚本逐字替换，SNI 模板只由 Go 渲染。
+func renderPanel(domain, dir string, sni bool) ([]byte, error) {
+	name := "panel-ssl.conf.tmpl"
+	if sni {
+		name = "panel-sni.conf.tmpl"
+	}
+	tmpl, err := template.ParseFiles(filepath.Join(dir, name))
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	err = tmpl.Execute(&out, struct{ Domain string }{domain})
+	return out.Bytes(), err
+}
+
+// 还原站点后恢复 Nginx 和 Xray，使已完成的部分重载也能回退。
+func restoreRelayRuntime() error {
+	return nginxReload()
 }

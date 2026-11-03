@@ -157,6 +157,9 @@ func validateTCPUpstream(host string, port int, edge string) error {
 }
 
 func validateTCPListenPort(port int) error {
+	if port == 8443 || (port >= realityPortMin && port <= realityPortMax) {
+		return errors.New("入口端口为本机内部监听保留")
+	}
 	if port < tcpPortMin || port > tcpPortMax {
 		return fmt.Errorf("入口端口须在 %d-%d 之间", tcpPortMin, tcpPortMax)
 	}
@@ -282,27 +285,30 @@ func allocateTCPPort() (int, error) {
 }
 
 type tcpLifecycle struct {
-	render     func(TCPForwardMeta) ([]byte, error)
-	write      func(string, []byte, os.FileMode) error
-	remove     func(string) error
-	rename     func(string, string) error
-	check      func() error
-	reload     func() error
-	waitPort   func(int, bool) error
-	writeLink  func(int, string) error
-	removeLink func(int) error
+	render        func(TCPForwardMeta) ([]byte, error)
+	write         func(string, []byte, os.FileMode) error
+	remove        func(string) error
+	discardBackup func(string) error
+	rename        func(string, string) error
+	check         func() error
+	reload        func() error
+	waitPort      func(int, bool) error
+	writeLink     func(int, string) error
+	removeLink    func(int) error
+	consistent    func()
+	commit        func() error
 }
 
 func liveTCPLifecycle() tcpLifecycle {
 	return tcpLifecycle{
-		render: renderTCPForward,
+		render: renderTCPForward, consistent: markNginxConsistent, commit: commitNginxMutation,
 		write: func(path string, data []byte, mode os.FileMode) error {
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return err
 			}
-			return atomicWrite(path, data, mode)
+			return writeNginxFile(path, data, mode)
 		},
-		remove: os.Remove, rename: os.Rename,
+		remove: removeNginxFile, rename: renameNginxFile, discardBackup: os.Remove,
 		check: nginxSyntaxCheck, reload: nginxReload, waitPort: waitTCPPort,
 		writeLink: func(port int, link string) error {
 			if err := os.MkdirAll(tcpLinkDir, 0o700); err != nil {
@@ -326,18 +332,24 @@ func provisionTCPForward(meta TCPForwardMeta, link string, ops tcpLifecycle) err
 	}
 	path := tcpConfPath(meta.ListenPort)
 	configWritten := false
-	reloaded := false
 	rollback := func(cause error) error {
+		var rollbackErr error
 		if configWritten {
-			cause = errors.Join(cause, ops.remove(path))
-		}
-		if reloaded {
-			cause = errors.Join(cause, ops.reload(), ops.waitPort(meta.ListenPort, false))
+			rollbackErr = ops.remove(path)
+			if rollbackErr == nil {
+				rollbackErr = ops.reload()
+				if rollbackErr == nil {
+					rollbackErr = ops.waitPort(meta.ListenPort, false)
+				}
+			}
 		}
 		if link != "" {
-			cause = errors.Join(cause, ops.removeLink(meta.ListenPort))
+			rollbackErr = errors.Join(rollbackErr, ops.removeLink(meta.ListenPort))
 		}
-		return cause
+		if rollbackErr == nil && ops.consistent != nil {
+			ops.consistent()
+		}
+		return errors.Join(cause, rollbackErr)
 	}
 	if link != "" {
 		if err := ops.writeLink(meta.ListenPort, link); err != nil {
@@ -354,7 +366,6 @@ func provisionTCPForward(meta TCPForwardMeta, link string, ops tcpLifecycle) err
 	if err := ops.reload(); err != nil {
 		return rollback(fmt.Errorf("Nginx 重载失败: %w", err))
 	}
-	reloaded = true
 	if err := ops.waitPort(meta.ListenPort, true); err != nil {
 		return rollback(err)
 	}
@@ -374,7 +385,16 @@ func removeTCPForward(port int, staged bool, ops tcpLifecycle) error {
 		if staged {
 			return cause
 		}
-		return errors.Join(cause, ops.rename(backup, path))
+		if err := ops.rename(backup, path); err != nil {
+			return errors.Join(cause, err)
+		}
+		if err := ops.reload(); err != nil {
+			return errors.Join(cause, err)
+		}
+		if ops.consistent != nil {
+			ops.consistent()
+		}
+		return cause
 	}
 	if err := ops.check(); err != nil {
 		return restore(err)
@@ -387,14 +407,29 @@ func removeTCPForward(port int, staged bool, ops tcpLifecycle) error {
 			return err
 		}
 		// 重载没有生效，磁盘配置要和仍在运行的转发保持一致。
-		return errors.Join(err, ops.rename(backup, path), ops.reload())
+		return restore(err)
 	}
 	// 备份最后删：清理失败时它还在，面板能显示“删除未完成”并重试。
+	if ops.commit != nil {
+		if err := ops.commit(); err != nil {
+			return err
+		}
+	}
 	if err := ops.removeLink(port); err != nil {
 		return fmt.Errorf("转发已停止，清理链接失败，请再次删除重试: %w", err)
 	}
-	if err := ops.remove(backup); err != nil {
+	discard := ops.discardBackup
+	if discard == nil {
+		discard = ops.remove
+	}
+	if err := discard(backup); err != nil {
+		if ops.commit != nil {
+			return errors.Join(fmt.Errorf("转发已停止，清理配置备份失败，请再次删除重试: %w", err), ops.commit())
+		}
 		return fmt.Errorf("转发已停止，清理配置备份失败，请再次删除重试: %w", err)
+	}
+	if ops.commit != nil {
+		return ops.commit()
 	}
 	return nil
 }
@@ -478,8 +513,10 @@ func tcpForwardsCreate(w http.ResponseWriter, r *http.Request) {
 	if !requireAdmin(w, r) {
 		return
 	}
-	siteMutationMu.Lock()
-	defer siteMutationMu.Unlock()
+	if err := ensureNoSNIMigration(); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
 	var req tcpCreateReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -500,6 +537,17 @@ func tcpForwardsCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.ListenPort != 0 {
+		if err := validateTCPListenPort(req.ListenPort); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+	}
+	unlock, ok := lockSiteRequest(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	if !hostStreamEnabled() {
 		writeErr(w, http.StatusPreconditionFailed, "宿主 nginx.conf 未引入 stream.d/*.conf，无法创建 TCP 转发")
 		return
@@ -534,10 +582,6 @@ func tcpForwardsCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		if err := validateTCPListenPort(port); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
 		if err := tcpPortAvailable(port); err != nil {
 			writeErr(w, http.StatusConflict, err.Error())
 			return
@@ -555,8 +599,14 @@ func tcpForwardsCreate(w http.ResponseWriter, r *http.Request) {
 		V: 1, ListenPort: port, UpstreamHost: host, UpstreamPort: upstreamPort,
 		Label: req.Label, Owner: authKeyID(r), Created: time.Now().UTC().Format(time.RFC3339),
 	}
+	if !prepareNginxMutation(w) {
+		return
+	}
 	if err := provisionTCPForward(meta, link, liveTCPLifecycle()); err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !completeNginxRequest(w) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -568,7 +618,7 @@ func tcpForwardsCreate(w http.ResponseWriter, r *http.Request) {
 // parseTCPPortParam 只接受纯数字，防止路径参数拼进文件路径。
 func parseTCPPortParam(w http.ResponseWriter, r *http.Request) (int, bool) {
 	port, err := strconv.Atoi(r.PathValue("port"))
-	if err != nil || validateTCPListenPort(port) != nil {
+	if err != nil || port < tcpPortMin || port > tcpPortMax {
 		writeErr(w, http.StatusBadRequest, "端口无效")
 		return 0, false
 	}
@@ -600,12 +650,19 @@ func tcpForwardsDelete(w http.ResponseWriter, r *http.Request) {
 	if !requireAdmin(w, r) {
 		return
 	}
+	if err := ensureNoSNIMigration(); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
 	port, ok := parseTCPPortParam(w, r)
 	if !ok {
 		return
 	}
-	siteMutationMu.Lock()
-	defer siteMutationMu.Unlock()
+	unlock, ok := lockSiteRequest(w)
+	if !ok {
+		return
+	}
+	defer unlock()
 	staged := false
 	if _, err := os.Stat(tcpConfPath(port)); os.IsNotExist(err) {
 		if _, err := os.Stat(tcpConfPath(port) + tcpDeleteSuffix); err != nil {
@@ -614,8 +671,14 @@ func tcpForwardsDelete(w http.ResponseWriter, r *http.Request) {
 		}
 		staged = true
 	}
+	if !prepareNginxMutation(w) {
+		return
+	}
 	if err := removeTCPForward(port, staged, liveTCPLifecycle()); err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !completeNginxRequest(w) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": port})
