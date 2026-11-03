@@ -337,14 +337,6 @@ func TestM15DamagedRealitySecretsDoNotBlockOrdinaryLifecycles(t *testing.T) {
 			if err := removeManagedSite(meta, "TEST-ONLY", path, false, ops); err != nil {
 				t.Fatal("普通站点删除失败", err)
 			}
-			tcpOps := newFakeTCPOps().ops()
-			tcpOps.check, tcpOps.reload = syncConfig, reload
-			if err := provisionTCPForward(testTCPMeta, "", tcpOps); err != nil {
-				t.Fatal("TCP 创建失败", err)
-			}
-			if err := removeTCPForward(testTCPMeta.ListenPort, false, tcpOps); err != nil {
-				t.Fatal("TCP 删除失败", err)
-			}
 			if err := reload(); err != nil {
 				t.Fatal("证书续期共用重载路径失败", err)
 			}

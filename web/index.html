@@ -228,84 +228,10 @@
         </template>
       </div>
 
-      <!-- ④ TCP forwards (admin only) -->
+      <!-- ④ Reality 入口，仅管理员可用。 -->
       <template x-if="role === 'admin'">
         <div class="card">
-          <h2>④ TCP 转发（Reality）
-            <span class="pill muted small" x-text="(tcpForwards.length || 0) + ' 项'"></span>
-            <span class="right">
-              <button class="secondary small" @click="loadTcp()">刷新</button>
-            </span>
-          </h2>
-          <template x-if="!tcpEnabled">
-            <div class="err-banner">宿主 nginx.conf 尚未引入 stream.d/*.conf，无法创建。请先运行 deploy/install.sh。</div>
-          </template>
-          <template x-if="tcpWarnings.length">
-            <div class="err-banner">
-              <template x-for="w in tcpWarnings"><div x-text="w"></div></template>
-            </div>
-          </template>
-          <template x-if="tcpError">
-            <div class="err-banner" x-text="tcpError"></div>
-          </template>
-          <p class="muted small">四层转发，不解 TLS，不需要域名和证书。粘贴 Reality 节点链接会导出新链接；也可以只填上游 IP:端口。入口端口要在防火墙放行。</p>
-          <label>原节点链接 或 上游 IP:端口</label>
-          <input type="text" autocomplete="off" spellcheck="false" x-model="tcpSource" placeholder="vless://… 或 198.51.100.7:443" />
-          <div class="row3" style="margin-top:0.65rem;">
-            <div>
-              <label>入口端口（留空自动分配）</label>
-              <input type="number" min="1024" max="65535" x-model="tcpPort" />
-            </div>
-            <div>
-              <label>备注（用作新链接的节点名）</label>
-              <input type="text" maxlength="64" x-model="tcpLabel" />
-            </div>
-            <div>
-              <label>&nbsp;</label>
-              <button class="mobile-full" @click="createTcp()" :disabled="tcpBusy || !tcpEnabled || !tcpSource.trim()"
-                      x-text="tcpBusy ? '创建中…' : '创建'"></button>
-            </div>
-          </div>
-          <template x-if="tcpLink">
-            <div class="ok-banner" style="margin-top:0.75rem;">
-              <strong>新链接（含节点凭据，请勿外传）：</strong>
-              <code style="display:block; margin:0.35rem 0; word-break:break-all;" x-text="tcpLink"></code>
-              <button class="secondary small" @click="copyTcpLink()">复制</button>
-              <button class="secondary small" @click="tcpLink=''">关闭</button>
-            </div>
-          </template>
-          <div style="margin-top:0.75rem;">
-            <h3 style="margin:0 0 0.5rem 0; font-size:0.95rem;">已有转发</h3>
-            <template x-if="!tcpLoaded">
-              <p class="muted small">加载中…</p>
-            </template>
-            <template x-if="tcpLoaded && tcpForwards.length === 0">
-              <p class="muted small">暂无转发。</p>
-            </template>
-            <template x-for="f in tcpForwards" :key="f.listen_port">
-              <div class="site">
-                <div class="site-head">
-                  <span class="dom" x-text="':' + f.listen_port"></span>
-                  <span class="ups">→ <span x-text="f.upstream_host + ':' + f.upstream_port"></span></span>
-                  <template x-if="f.label"><span class="muted small" x-text="f.label"></span></template>
-                  <span class="pill small" :class="f.listening ? 'ok' : 'err'">入口</span>
-                  <span class="pill small" :class="f.upstream_ok ? 'ok' : 'err'">upstream</span>
-                  <template x-if="f.deletion_pending"><span class="pill warn small">删除未完成</span></template>
-                </div>
-                <div class="actions">
-                  <button class="secondary small" @click="showTcpLink(f)" :disabled="!f.has_link || !!f.deletion_pending">导出链接</button>
-                  <button class="danger small" @click="deleteTcp(f)">删除</button>
-                </div>
-              </div>
-            </template>
-          </div>
-        </div>
-      </template>
-
-      <!-- ⑤ Reality 入口，仅管理员可用。 -->
-      <template x-if="role === 'admin'">
-        <div class="card">
-          <h2>⑤ Reality 入口（共用 443）
+          <h2>④ Reality 入口（共用 443）
             <span class="pill small" :class="sniEnabled ? 'ok' : 'muted'" x-text="sniEnabled ? 'SNI 已开启' : 'SNI 未开启'"></span>
             <span class="pill small" :class="xrayRunning ? 'ok' : 'muted'" x-text="xrayRunning ? 'Xray 运行中' : 'Xray 未就绪'"></span>
             <span class="small muted" x-show="xrayError" x-text="xrayError"></span>
@@ -373,7 +299,7 @@
       <!-- ⑥ 密钥管理，仅管理员可用。 -->
       <template x-if="role === 'admin'">
         <div class="card">
-          <h2>⑥ 密钥管理
+          <h2>⑤ 密钥管理
             <span class="pill muted small" x-text="(keys.length || 0) + ' 个'"></span>
             <span class="right">
               <button class="secondary small" @click="loadKeys()">刷新</button>
@@ -442,9 +368,6 @@ function app() {
     flash: '', flashOk: false,
     // key management (admin)
     keys: [], newKeyId: '', newUserNote: '', newKeyBusy: false, newKeyResult: null,
-    // TCP forwards (admin)
-    tcpEnabled: true, tcpLoaded: false, tcpError: '', tcpForwards: [], tcpWarnings: [], tcpSource: '', tcpPort: '', tcpLabel: '', tcpBusy: false, tcpLink: '',
-
     // Reality 入口：凭据只保存在当前会话，退出时清空。
     sniEnabled: false, xrayRunning: false, xrayError: '', realitySites: [], realitySub: '', realityZone: '', realityLabel: '', realitySource: '', realityBusy: false, realityError: '', realityExport: '',
     get cfReady() { return !!this.cfStatus.configured; },
@@ -497,8 +420,6 @@ function app() {
       this.loggedIn = false;
       this.keyId = '';
       this.role = '';
-      this.tcpLink = '';
-      this.tcpSource = '';
       this.realitySource = ''; this.realityExport = ''; this.realitySites = []; this.xrayError = ''; this.xrayRunning = false;
     },
 
@@ -507,7 +428,7 @@ function app() {
       // 并发加载：线路慢时串行要等很久，排在后面的区块一直是空的。
       const jobs = [this.loadEdge(), this.reloadSites()];
       if (this.cfStatus.configured) jobs.push(this.loadZones());
-      if (this.role === 'admin') jobs.push(this.loadKeys(), this.loadTcp(), this.loadReality());
+      if (this.role === 'admin') jobs.push(this.loadKeys(), this.loadReality());
       await Promise.all(jobs);
     },
 
@@ -642,83 +563,6 @@ function app() {
         }
         this.flashIt('已复制');
       } catch(e) { this.realityError = '复制失败，请手动复制'; }
-    },
-
-    // ---- TCP forwards ----
-
-    async loadTcp() {
-      try {
-        const r = await fetch('/api/tcp-forwards', { credentials: 'include' });
-        const j = await r.json().catch(()=>({}));
-        if (!r.ok) { this.tcpError = j.error || ('加载转发列表失败: ' + r.status); return; }
-        this.tcpEnabled = j.enabled;
-        this.tcpForwards = j.forwards || [];
-        this.tcpWarnings = j.warnings || [];
-      } catch(e) {
-        this.tcpError = '加载转发列表失败: ' + e;
-      } finally {
-        this.tcpLoaded = true;
-      }
-    },
-
-    async createTcp() {
-      const source = this.tcpSource.trim();
-      const body = { listen_port: parseInt(this.tcpPort, 10) || 0, label: this.tcpLabel.trim() };
-      if (source.toLowerCase().startsWith('vless://')) { body.link = source; } else { body.upstream = source; }
-      this.tcpBusy = true;
-      this.tcpError = '';
-      try {
-        const r = await fetch('/api/tcp-forwards', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          credentials: 'include',
-          body: JSON.stringify(body)
-        });
-        const j = await r.json().catch(()=>({}));
-        if (!r.ok) { this.tcpError = j.error || '创建失败'; return; }
-        this.flashIt('已创建转发，入口端口 ' + j.forward.listen_port);
-        this.tcpLink = j.link || '';
-        this.tcpSource = ''; this.tcpPort = ''; this.tcpLabel = '';
-        await this.loadTcp();
-      } finally { this.tcpBusy = false; }
-    },
-
-    async showTcpLink(f) {
-      this.tcpError = '';
-      const r = await fetch('/api/tcp-forwards/' + f.listen_port + '/link', { credentials: 'include' });
-      const j = await r.json().catch(()=>({}));
-      if (!r.ok) { this.tcpError = j.error || '导出失败'; return; }
-      this.tcpLink = j.link;
-    },
-
-    async copyTcpLink() {
-      this.tcpError = '';
-      try {
-        // navigator.clipboard 只在 HTTPS 下可用，HTTP 访问面板时退回 execCommand。
-        if (navigator.clipboard) {
-          await navigator.clipboard.writeText(this.tcpLink);
-        } else {
-          const t = document.createElement('textarea');
-          t.value = this.tcpLink;
-          document.body.appendChild(t);
-          t.select();
-          const ok = document.execCommand('copy');
-          t.remove();
-          if (!ok) throw new Error('execCommand failed');
-        }
-        this.flashIt('已复制');
-      } catch(e) { this.tcpError = '复制失败，请手动复制'; }
-    },
-
-    async deleteTcp(f) {
-      if (!confirm('删除端口 ' + f.listen_port + ' 的转发？新连接会被拒绝，导出的链接随之失效；已建立的连接可能持续到自身断开。')) return;
-      this.tcpError = '';
-      const r = await fetch('/api/tcp-forwards/' + f.listen_port, {
-        method: 'DELETE', credentials: 'include'
-      });
-      if (!r.ok) { const j = await r.json().catch(()=>({})); this.tcpError = j.error || '删除失败'; return; }
-      this.flashIt('已删除端口 ' + f.listen_port);
-      this.tcpLink = '';
-      await this.loadTcp();
     },
 
     // ---- key management ----

@@ -243,12 +243,6 @@ func TestM15RealityHandlersAndReservedPorts(t *testing.T) {
 		if validateTCPListenPort(port) == nil {
 			t.Fatal(port)
 		}
-		r := adminRequest("POST", "/api/tcp-forwards", strings.NewReader(fmt.Sprintf(`{"upstream":"198.51.100.7:443","listen_port":%d}`, port)))
-		w := httptest.NewRecorder()
-		tcpForwardsCreate(w, r)
-		if w.Code != 400 {
-			t.Fatal(port, w.Code, w.Body.String())
-		}
 	}
 }
 func TestM15PrivateLinkAndCamouflage(t *testing.T) {
@@ -642,17 +636,6 @@ func TestM15DirectoryLockNoFileMutation(t *testing.T) {
 	third()
 	if !reflect.DeepEqual(before, configTree(t, p, true)) {
 		t.Fatal("加锁不能创建或改写文件")
-	}
-}
-func TestM15LegacyReservedTCPPortRemainsManageable(t *testing.T) {
-	for _, port := range []int{8443, 30000, 30999} {
-		r := httptest.NewRequest("GET", "/", nil)
-		r.SetPathValue("port", fmt.Sprint(port))
-		w := httptest.NewRecorder()
-		got, ok := parseTCPPortParam(w, r)
-		if !ok || got != port {
-			t.Fatal("保留范围仅限制新建，旧转发仍须可删除和导出", port)
-		}
 	}
 }
 

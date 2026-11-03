@@ -9,7 +9,6 @@
 - **站点隔离**：普通用户只能看到和操作自己创建的站点，管理员可管理所有站点
 - **自动续签**：每 12 小时扫描，证书剩余 ≤30 天时自动续签
 - **WebSocket/SSE 透传**：默认支持，无需额外配置
-- **TCP 转发（管理员）**：粘贴 Reality 节点的 `vless://` 链接（或填上游 `IP:端口`），开一个四层转发端口并导出改好地址的新链接；不需要域名和证书。上游只支持公网 IP，入口端口要在防火墙放行
 - **无数据库**：所有状态存储在 Nginx 配置文件的 `relay-meta` 注释中，文件即真相
 - **证书脱敏**：CF Token 在界面中脱敏显示
 
@@ -124,10 +123,6 @@ curl -X DELETE http://127.0.0.1:8787/api/keys/user01 \
 | POST | `/api/sites/{domain}/toggle` | 启用/停用站点 |
 | DELETE | `/api/sites/{domain}` | 删除站点 |
 | POST | `/api/sites/adopt` | 接管已有 Nginx 配置 |
-| GET | `/api/tcp-forwards` | 列出 TCP 转发（admin only） |
-| POST | `/api/tcp-forwards` | 创建 TCP 转发，有节点链接时返回新链接（admin only） |
-| GET | `/api/tcp-forwards/{port}/link` | 重新导出新链接（admin only） |
-| DELETE | `/api/tcp-forwards/{port}` | 删除 TCP 转发（admin only） |
 | GET | `/api/keys` | 列出密钥（admin only，脱敏） |
 | POST | `/api/keys` | 创建密钥（admin only） |
 | DELETE | `/api/keys/{key_id}` | 删除密钥（admin only） |
@@ -140,8 +135,6 @@ curl -X DELETE http://127.0.0.1:8787/api/keys/user01 \
 | `/etc/vps-relay/users/{id}/cf-token` | 用户私有 Cloudflare Token |
 | `/usr/local/nginx/conf/conf.d/relay-*.conf` | 站点配置 |
 | `/usr/local/nginx/conf/ssl/{domain}/` | TLS 证书 |
-| `/usr/local/nginx/conf/stream.d/relay-tcp-{port}.conf` | TCP 转发配置（`nginx.conf` 需引入 `stream.d/*.conf`，`install.sh` 会补齐） |
-| `/etc/vps-relay/tcp-links/{port}.link` | 导出的节点链接，含凭据，权限 600 |
 
 ## 面板 HTTPS
 
@@ -164,7 +157,7 @@ docker compose up -d
 
 ## 443 SNI 分流与 Reality 入口（M15）
 
-边缘机 443 可切换为 Nginx stream 的 `ssl_preread` 分流：普通 HTTPS 站点和面板转到本机 `127.0.0.1:8443`，仍保留真实客户 IP；Reality 专用域名统一转到面板容器内托管的 Xray（本机 30001）。前端 Xray 接受客户端连接，再使用粘贴的后端 VLESS Reality 参数做链式转发。Reality 回落在前端本机的证书和静态伪装站完成，后端不需要任何改动。原有四层 TCP 转发继续可用。
+边缘机 443 可切换为 Nginx stream 的 `ssl_preread` 分流：普通 HTTPS 站点和面板转到本机 `127.0.0.1:8443`，仍保留真实客户 IP；Reality 专用域名统一转到面板容器内托管的 Xray（本机 30001）。前端 Xray 接受客户端连接，再使用粘贴的后端 VLESS Reality 参数做链式转发。Reality 回落在前端本机的证书和静态伪装站完成，后端不需要任何改动。历史 `stream.d/relay-tcp-*.conf` 保持原样，面板不再提供四层 TCP 转发管理；SNI 迁移与恢复继续按原规则处理。
 
 宿主 Nginx 必须带 `--with-stream_ssl_preread_module`，stream 块需引入 `stream.d/*.conf`。`.github/workflows/nginx.yml` 提供与线上参数一致的 Nginx 1.28.0 构建产物，宿主二进制由管理员另行更换。新装机仍使用普通 HTTPS 模式。
 
@@ -183,17 +176,17 @@ docker exec vps-relay vps-relay sni443 disable
 
 迁移先检查宿主模块、stream include、8443 占用及非托管配置的 443 监听，原文件与新文件清单备份到 `/etc/vps-relay/backup/sni443-<UTC 时间>/`。启用、停用和待删除的托管站点及 HTTPS 面板都会重渲染，纯 HTTP 面板保持原样。检查、重载或 15 秒内的已知域名证书核验、未知域名握手拒绝核验失败会自动还原并核验旧模式。迁移与 API 写操作、自动续期互斥。迁移修改配置前将进度写入备份的 `manifest.json`，核验后标记 `done`；进度为 `in-progress` 时，状态命令会提示先 `recover`，面板继续提供读取，但暂停 Xray 启动、配置写操作及证书续期重载。恢复成功标记 `recovered`，恢复未通过可再次运行 `recover`。面板 HTTPS 应在迁移前配置好。
 
-管理员在“⑤ Reality 入口（共用 443）”中选择专用子域名并粘贴后端链接即可创建。面板使用当前管理员的 Cloudflare Token 接管或新建 DNS only A 记录并签发真实证书，默认伪装页位于 `/usr/local/nginx/html/relay-camouflage/index.html`，已有页面不会覆盖。后端仅支持公网 IP、VLESS Reality TCP，flow 为空或 `xtls-rprx-vision`，必须包含 sni 和 pbk。客户端使用导出的新链接；**Clash/mihomo 需开启 `reality-opts.support-x25519mlkem768`**。
+管理员在“④ Reality 入口（共用 443）”中选择专用子域名并粘贴后端链接即可创建。面板使用当前管理员的 Cloudflare Token 接管或新建 DNS only A 记录并签发真实证书，默认伪装页位于 `/usr/local/nginx/html/relay-camouflage/index.html`，已有页面不会覆盖。后端仅支持公网 IP、VLESS Reality TCP，flow 为空或 `xtls-rprx-vision`，必须包含 sni 和 pbk。客户端使用导出的新链接；**Clash/mihomo 需开启 `reality-opts.support-x25519mlkem768`**。
 
 前端身份独立于后端：首次生成的 X25519 密钥和 shortId 保存在 `/etc/vps-relay/xray/keys.json`，每入口的前端 UUID 和后端出站机密保存在 `xray/entries/<domain>.json`，生成配置为 `xray/config.json`（均位于 `/etc/vps-relay/`，目录 700、文件 600）。导出链接保存于 `/etc/vps-relay/reality-links/<domain>.link`（目录 700、文件 600）。公开的 Nginx `relay-meta` 不含 UUID 或密钥。
 
-Xray 配置仅在内容变化时校验并应用，配置不变不校验、不重启；启动前检查 30001 未被其他进程占用，启动后最多等待 5 秒确认本机端口可连接，故障显示在入口状态中。Nginx 重载成功后，监督器已接收的配置按退避重试；读配置或控制 socket 通知失败等尚未提交的配置，由运行中的面板每 30 秒对账补偿。运行摘要一致时对账不重启 Xray，不回退普通站点或 TCP 转发；新建 Reality 入口必须确认 Xray 就绪，否则撤销。增删、启停入口会重启共享 Xray 并断开现有 Reality 连接；没有启用入口时停止子进程，异常退出按 1–30 秒退避重试。**重建或重启面板容器会断开正在使用的 Reality 连接**。仅管理员可创建、导出、启停和删除入口，上游更改需删除重建；存在任何状态的 Reality 入口时禁止关闭 SNI 模式。TCP 转发的新入口不能使用内部保留的 8443 和 30000–30999。
+Xray 配置仅在内容变化时校验并应用，配置不变不校验、不重启；启动前检查 30001 未被其他进程占用，启动后最多等待 5 秒确认本机端口可连接，故障显示在入口状态中。Nginx 重载成功后，监督器已接收的配置按退避重试；读配置或控制 socket 通知失败等尚未提交的配置，由运行中的面板每 30 秒对账补偿。运行摘要一致时对账不重启 Xray，不回退普通站点；新建 Reality 入口必须确认 Xray 就绪，否则撤销。增删、启停入口会重启共享 Xray 并断开现有 Reality 连接；没有启用入口时停止子进程，异常退出按 1–30 秒退避重试。**重建或重启面板容器会断开正在使用的 Reality 连接**。仅管理员可创建、导出、启停和删除入口，上游更改需删除重建；存在任何状态的 Reality 入口时禁止关闭 SNI 模式。8443 和 30000–30999 为本机内部监听保留，迁移继续拒绝占用这些端口的历史 stream 配置。
 
 手工执行 `relay-acme` 的 issue、renew、remove 都先通过 `vps-relay lock-run -- ...` 取得配置目录锁并检查迁移记录，整个脚本期间持锁；取锁失败或存在 `in-progress` 时直接以非零状态退出，不写证书或 ACME 状态。面板调用时继承并验证真实锁描述符，环境变量本身不能绕过锁。面板发起的 ACME 操作运行在独立进程组中，超时会结束整个进程组并等待退出，再释放配置锁。直接执行 `nginx-reload` 若取锁失败也会报错退出，可待锁释放后重试。
 
 证书操作先在隔离副本中执行，全部成功并校验证书与私钥匹配后才发布；失败恢复原证书及 ACME 状态，手工 remove 也不能删除仍被活动配置引用的证书。发布进度存于 `backup/acme-*/manifest.json`，中断后由下一次配置操作、启动或周期对账恢复。配置写操作在首次修改前用 `nginx-pending.json` 保存快照，日志仅表示一个操作尚未完成。全部成功，或失败后已完整回滚并重新加载，才显式标记一致并删除日志。DNS 切换前先保留已加载的站点及恢复元数据；DNS 回滚失败时保留现场并立即结束日志。删除站点在隔离配置并重载成功后、永久删除证书或入口机密之前结束日志，证书子事务也在提交清单前结束借用的父日志；后续清理失败保留现场供重试，不能再恢复引用已删除材料的活动配置。边界后的新一轮配置变更以安全现场重新取快照；DNS 结果补记与非活动删除备份的清理只做原子操作，不重新开启日志或触发额外 HUP。进程中断或回滚失败留下的日志由下次对账恢复快照、执行 `nginx -t` 和 HUP，成功后删除；恢复可重入，损坏记录保留现场并报错。重载语义与 M14.2 一致：语法检查通过且信号送达即成功，宿主 Nginx 拒绝重载而继续运行旧配置的情况，普通操作不做额外检测；SNI 迁移另有端口及 TLS 核验。SNI 回退会恢复未改动站点的原始字节及权限，并删除空的 `stream.d/relay-443/` 目录。
 
-入口机密缺失、不可读或损坏时，仅该入口暂停并从 SNI map 与 Xray 配置排除；完整 Xray 配置校验失败时会逐入口独立校验，暂停有问题的入口并重新校验剩余配置，全部失败或共享配置仍失败时暂停全部入口并停止 Xray。共享 `keys.json` 故障也会暂停全部入口。普通站点、TCP 转发和证书续期继续工作，Reality 卡片使用状态接口显示暂停原因、Xray 运行状态和最近错误；语义校验的脱敏原因与配置摘要保存在 `xray/health.json`（600）。请恢复原机密文件并执行一次配置操作使其重新同步；存在入口时不会因密钥文件缺失而静默生成另一套密钥。新建入口会提前校验后端指纹 `fp`，缺省为 `chrome`，不接受不支持的指纹值。
+入口机密缺失、不可读或损坏时，仅该入口暂停并从 SNI map 与 Xray 配置排除；完整 Xray 配置校验失败时会逐入口独立校验，暂停有问题的入口并重新校验剩余配置，全部失败或共享配置仍失败时暂停全部入口并停止 Xray。共享 `keys.json` 故障也会暂停全部入口。普通站点和证书续期继续工作，Reality 卡片使用状态接口显示暂停原因、Xray 运行状态和最近错误；语义校验的脱敏原因与配置摘要保存在 `xray/health.json`（600）。请恢复原机密文件并执行一次配置操作使其重新同步；存在入口时不会因密钥文件缺失而静默生成另一套密钥。新建入口会提前校验后端指纹 `fp`，缺省为 `chrome`，不接受不支持的指纹值。
 
 API：`GET /api/reality` 返回 `sni_mode`、`xray_running`、`xray_error` 和入口列表 `entries`（每入口含 `reality_error`、`reality_paused`）；`POST /api/reality` 接受 `{domain, link, label}`；`GET /api/reality/{domain}/link` 重新导出链接。启停与删除沿用站点 API。
 

@@ -265,45 +265,6 @@ func TestM15BoundaryDNSRollbackFailureKeepsSiteAndSecrets(t *testing.T) {
 	}
 }
 
-func TestM15BoundaryTCPSecretCleanupCannotRestoreForward(t *testing.T) {
-	for _, killed := range []bool{false, true} {
-		t.Run(map[bool]string{false: "error", true: "killed"}[killed], func(t *testing.T) {
-			p, journal := operationPaths(t)
-			path := filepath.Join(p.conf, filepath.Base(tcpConfPath(24443)))
-			putTestFile(t, path, []byte("active forward"))
-			link := filepath.Join(t.TempDir(), "link")
-			putTestFile(t, link, []byte("private link"))
-			mapPath := func(path string) string { return filepath.Join(p.conf, filepath.Base(path)) }
-			ops := newFakeTCPOps().ops()
-			ops.rename = func(from, to string) error { return renameNginxFile(mapPath(from), mapPath(to)) }
-			ops.remove = func(path string) error { return removeNginxFile(mapPath(path)) }
-			ops.commit = commitNginxMutation
-			ops.removeLink = func(int) error {
-				assertNoOperationLog(t, journal)
-				if err := os.Remove(link); err != nil {
-					return err
-				}
-				if killed {
-					panic("模拟被杀")
-				}
-				return errors.New("链接删除后清理失败")
-			}
-			if killed {
-				sixthInterrupt(t, func() { _ = removeTCPForward(24443, false, ops) })
-			} else if err := removeTCPForward(24443, false, ops); err == nil {
-				t.Fatal("应报告清理失败")
-			}
-			assertNoOperationLog(t, journal)
-			if err := reconcileNginxWith(journal, func() error { t.Fatal("不能恢复已停止的转发"); return nil }); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				t.Fatal("复活了已删除链接的 TCP 转发")
-			}
-		})
-	}
-}
-
 func TestM15BoundaryFailedRealityCleanupLoadsIsolationBeforeDeletingSecrets(t *testing.T) {
 	for _, failure := range []string{"reload", "cleanup", "killed"} {
 		t.Run(failure, func(t *testing.T) {
@@ -464,39 +425,5 @@ func TestM15BoundaryCannotCommitStopsCertificateDeletion(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal("尚未删除证书时应能恢复活动配置", err)
-	}
-}
-
-func TestM15BoundaryTCPBackupCleanupDoesNotReopenJournal(t *testing.T) {
-	for _, failure := range []string{"none", "error", "killed"} {
-		t.Run(failure, func(t *testing.T) {
-			p, journal := operationPaths(t)
-			path := filepath.Join(p.conf, filepath.Base(tcpConfPath(24443)))
-			putTestFile(t, path, []byte("active forward"))
-			mapPath := func(path string) string { return filepath.Join(p.conf, filepath.Base(path)) }
-			ops := newFakeTCPOps().ops()
-			ops.rename = func(from, to string) error { return renameNginxFile(mapPath(from), mapPath(to)) }
-			ops.commit = commitNginxMutation
-			ops.removeLink = func(int) error { assertNoOperationLog(t, journal); return nil }
-			ops.discardBackup = func(backup string) error {
-				assertNoOperationLog(t, journal)
-				if failure == "killed" {
-					panic("模拟被杀")
-				}
-				if failure == "error" {
-					return errors.New("备份清理失败")
-				}
-				return os.Remove(mapPath(backup))
-			}
-			if failure == "killed" {
-				sixthInterrupt(t, func() { _ = removeTCPForward(24443, false, ops) })
-			} else if err := removeTCPForward(24443, false, ops); (err != nil) != (failure == "error") {
-				t.Fatal(err)
-			}
-			assertNoOperationLog(t, journal)
-			if err := reconcileNginxWith(journal, func() error { t.Fatal("不得额外 HUP 或恢复旧转发"); return nil }); err != nil {
-				t.Fatal(err)
-			}
-		})
 	}
 }

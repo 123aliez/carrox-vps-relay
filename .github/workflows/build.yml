@@ -38,7 +38,7 @@ jobs:
             printf "user nobody;\nevents { worker_connections 64; }\nhttp { include conf.d/*.conf; }\nstream { include stream.d/*.conf; }\n" > /tmp/ngx/conf/nginx.conf
             printf "server {\n    listen 24443;\n    proxy_pass 198.51.100.7:443;\n    proxy_timeout 1h;\n}\n" > /tmp/ngx/conf/stream.d/relay-tcp-24443.conf
             nginx -p /tmp/ngx -c /tmp/ngx/conf/nginx.conf -g "load_module /usr/lib/nginx/modules/ngx_stream_module.so;" -t
-            test -f /opt/vps-relay/templates/tcp.conf.tmpl
+            test -f /opt/vps-relay/templates/reality.conf.tmpl
           '
 
       - name: 冒烟测试：SNI 分流、伪装站和 Xray 配置

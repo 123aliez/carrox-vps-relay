@@ -163,7 +163,7 @@ func realityCreateWithMode(w http.ResponseWriter, r *http.Request, enabled func(
 	}
 	if !xrayRunning() {
 		if err := tcpPortAvailable(realityInboundPort); err != nil {
-			writeErr(w, 409, "本机 Xray 保留端口 30001 已被占用，请先释放该端口或删除旧 TCP 转发")
+			writeErr(w, 409, "本机 Xray 保留端口 30001 已被占用，请先释放该端口并检查历史 stream 配置")
 			return
 		}
 	}

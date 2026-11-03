@@ -186,7 +186,7 @@ func TestM15PendingMigrationBlocksAllMutationAPIsAndStartup(t *testing.T) {
 	before := configTree(t, p, true)
 	for name, handler := range map[string]http.HandlerFunc{
 		"create": sitesCreate, "edit": sitesEdit, "toggle": sitesToggle, "delete": sitesDelete, "adopt": sitesAdopt,
-		"tcp-create": tcpForwardsCreate, "tcp-delete": tcpForwardsDelete, "reality": realityCreate,
+		"reality":  realityCreate,
 		"cf-token": cfTokenSave, "key-create": keysCreate, "key-delete": keysDelete,
 	} {
 		w := httptest.NewRecorder()
@@ -283,35 +283,6 @@ func TestM15HUPSuccessXrayFailureKeepsDiskAndLoadedConfigConsistent(t *testing.T
 	requireBytes(t, readTestFile(t, path), loaded)
 	if string(loaded) != "新配置" || logs != 1 {
 		t.Fatal("不应因 Xray 失败回退已加载的编辑")
-	}
-	f := newFakeTCPOps()
-	tcpOps := f.ops()
-	var loadedTCP map[string]bool
-	tcpOps.reload = func() error {
-		return nginxReloadWith(func() error { return nil }, func() error {
-			loadedTCP = map[string]bool{}
-			for path, on := range f.files {
-				if strings.HasSuffix(path, ".conf") {
-					loadedTCP[path] = on
-				}
-			}
-			return nil
-		}, applyFails, logger)
-	}
-	if err := provisionTCPForward(testTCPMeta, "", tcpOps); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(loadedTCP, f.files) {
-		t.Fatal("TCP 创建磁盘与已加载配置不一致")
-	}
-	if err := removeTCPForward(testTCPMeta.ListenPort, false, tcpOps); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(loadedTCP, f.files) {
-		t.Fatal("TCP 删除磁盘与已加载配置不一致")
-	}
-	if logs != 3 {
-		t.Fatal("每次应记录 Xray 失败", logs)
 	}
 }
 
