@@ -136,7 +136,10 @@ install -d -m 0755 /usr/local/nginx/conf/conf.d
 # --- 4. Optional panel vhost ------------------------------------------------
 if [ -n "$PANEL_DOMAIN" ]; then
   PANEL_CONF=/usr/local/nginx/conf/conf.d/relay-panel.conf
-  if find /usr/local/nginx/conf/conf.d -maxdepth 1 -type f -name '*.conf' | xargs -r grep -n -E "server_name[[:space:]]+.*\\b${PANEL_DOMAIN//./\\.}\\b" >/dev/null 2>&1; then
+  # Only treat it as a conflict when grep actually matches something:
+  # `xargs -r grep` returns 0 on empty input without running grep, which
+  # falsely flagged a fresh install (empty conf.d) as a domain conflict.
+  if [[ -n "$(find /usr/local/nginx/conf/conf.d -maxdepth 1 -type f -name '*.conf' -exec grep -l -E "server_name[[:space:]]+.*\\b${PANEL_DOMAIN//./\\.}\\b" {} + 2>/dev/null)" ]]; then
     if [ ! -f "$PANEL_CONF" ] || ! grep -q "server_name $PANEL_DOMAIN;" "$PANEL_CONF"; then
       echo "ERROR: panel domain already used by another nginx conf: $PANEL_DOMAIN" >&2
       exit 1
