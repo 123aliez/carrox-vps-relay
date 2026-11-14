@@ -22,10 +22,39 @@ const (
 )
 
 // RealityMeta 只保存路由信息，节点凭据单独写入受限文件。
+// Mode: "transit"=链式中转（默认，历史数据缺省），"direct"=自持出口（本机 freedom 直连）。
 type RealityMeta struct {
-	UpstreamHost string `json:"upstream_host"`
-	UpstreamPort int    `json:"upstream_port"`
+	Mode         string `json:"mode,omitempty"`
+	UpstreamHost string `json:"upstream_host,omitempty"`
+	UpstreamPort int    `json:"upstream_port,omitempty"`
 	Label        string `json:"label"`
+}
+
+const (
+	realityModeTransit = "transit"
+	realityModeDirect  = "direct"
+)
+
+// normalizeRealityMode 规范化出口模式；缺失按 transit（历史数据），未知值拒绝。
+// direct 必须是显式选择，不能由“上游为空”推断。
+func normalizeRealityMode(raw string) (string, bool) {
+	switch raw {
+	case "", realityModeTransit:
+		return realityModeTransit, true
+	case realityModeDirect:
+		return realityModeDirect, true
+	default:
+		return "", false
+	}
+}
+
+// realityModeOf 返回入口的规范化模式；元数据异常时回退 transit 由校验层拒绝。
+func realityModeOf(meta *RealityMeta) string {
+	if meta == nil {
+		return realityModeTransit
+	}
+	mode, _ := normalizeRealityMode(meta.Mode)
+	return mode
 }
 
 func realityLinkPath(domain string) string { return filepath.Join(realityLinkDir, domain+".link") }
@@ -111,6 +140,7 @@ func realityCreateWithMode(w http.ResponseWriter, r *http.Request, enabled func(
 		Domain string `json:"domain"`
 		Link   string `json:"link"`
 		Label  string `json:"label"`
+		Mode   string `json:"mode"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req) != nil {
 		writeErr(w, 400, "请求格式无效")
@@ -119,6 +149,16 @@ func realityCreateWithMode(w http.ResponseWriter, r *http.Request, enabled func(
 	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
 	req.Link = strings.TrimSpace(req.Link)
 	req.Label = strings.TrimSpace(req.Label)
+	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
+	mode, ok := normalizeRealityMode(req.Mode)
+	if !ok {
+		writeErr(w, 400, "出口模式仅支持 transit 或 direct")
+		return
+	}
+	if mode == realityModeDirect && req.Link != "" {
+		writeErr(w, 400, "direct 模式不需要后端链接，请留空")
+		return
+	}
 	if validateSNIDomain(req.Domain) != nil {
 		writeErr(w, 400, "域名无效")
 		return
@@ -139,23 +179,30 @@ func realityCreateWithMode(w http.ResponseWriter, r *http.Request, enabled func(
 		writeErr(w, 409, "域名已由面板使用")
 		return
 	}
-	outbound, err := parseRealityOutbound(req.Link)
-	host, port := outbound.Host, outbound.Port
-	if err != nil {
-		writeErr(w, 400, err.Error())
-		return
+	var outbound realityOutbound
+	var err error
+	if mode == realityModeTransit {
+		outbound, err = parseRealityOutbound(req.Link)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
 	}
 	edge := edgeIPv4()
 	if ip := net.ParseIP(edge); ip == nil || ip.To4() == nil {
 		writeErr(w, 500, "无法检测边缘 IPv4")
 		return
 	}
-	if err = validateTCPUpstream(host, port, edge); err != nil {
-		writeErr(w, 400, err.Error())
-		return
+	host, port := "", 0
+	if mode == realityModeTransit {
+		if err = validateTCPUpstream(outbound.Host, outbound.Port, edge); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		host = net.ParseIP(outbound.Host).String()
+		outbound.Host = host
+		port = outbound.Port
 	}
-	host = net.ParseIP(host).String()
-	outbound.Host = host
 	token := cfTokenForKey(authKeyID(r))
 	if token == "" {
 		writeErr(w, 424, "请先配置 Cloudflare Token")
@@ -200,7 +247,11 @@ func realityCreateWithMode(w http.ResponseWriter, r *http.Request, enabled func(
 		writeErr(w, 500, "保存链接失败")
 		return
 	}
-	meta := SiteMeta{V: 2, Domain: req.Domain, Upstream: "https://" + net.JoinHostPort(host, strconv.Itoa(port)), Owner: authKeyID(r), Created: time.Now().UTC().Format(time.RFC3339), Reality: &RealityMeta{host, port, req.Label}}
+	upstream := ""
+	if mode == realityModeTransit {
+		upstream = "https://" + net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	meta := SiteMeta{V: 2, Domain: req.Domain, Upstream: upstream, Owner: authKeyID(r), Created: time.Now().UTC().Format(time.RFC3339), Reality: &RealityMeta{Mode: mode, UpstreamHost: host, UpstreamPort: port, Label: req.Label}}
 	meta, err = provisionRealityWith(meta,
 		func(meta SiteMeta) (SiteMeta, error) {
 			return provisionSite(meta, token, edge, *zone, liveSiteLifecycle())

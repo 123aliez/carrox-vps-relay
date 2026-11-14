@@ -78,6 +78,9 @@
   "routing": {
     "rules": [
       {
+        "inboundTag": [
+          "reality-in"
+        ],
         "outboundTag": "to-cover.example.com",
         "type": "field",
         "user": [

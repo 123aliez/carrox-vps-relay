@@ -167,7 +167,12 @@ func probeSite(s *Site) {
 	}
 	// Upstream
 	if s.Reality != nil {
-		s.UpstreamOK = tcpDial(net.JoinHostPort(s.Reality.UpstreamHost, fmt.Sprint(s.Reality.UpstreamPort)), 3*time.Second)
+		if realityModeOf(s.Reality) == realityModeDirect {
+			// direct 无上游可拨测；true 表示“不构成上游故障”，不代表公网连通性已验证。
+			s.UpstreamOK = true
+		} else {
+			s.UpstreamOK = tcpDial(net.JoinHostPort(s.Reality.UpstreamHost, fmt.Sprint(s.Reality.UpstreamPort)), 3*time.Second)
+		}
 	} else {
 		s.UpstreamOK = httpReachable(s.Upstream, 3*time.Second)
 	}

@@ -217,7 +217,14 @@ func renderXrayConfig(sites []SiteMeta, keys realityKeys, entries map[string]rea
 		}
 		seen[site.Domain] = true
 		entry, ok := entries[site.Domain]
-		if !ok || entry.FrontendUUID == "" || entry.Outbound.UUID == "" {
+		if !ok || entry.FrontendUUID == "" {
+			return nil, errors.New("缺少 Reality 入口机密")
+		}
+		mode, ok := normalizeRealityMode(site.Reality.Mode)
+		if !ok {
+			return nil, errors.New("Reality 出口模式无效")
+		}
+		if mode == realityModeTransit && entry.Outbound.UUID == "" {
 			return nil, errors.New("缺少 Reality 入口机密")
 		}
 		backend := entry.Outbound
@@ -229,12 +236,17 @@ func renderXrayConfig(sites []SiteMeta, keys realityKeys, entries map[string]rea
 		}
 		names = append(names, site.Domain)
 		clients = append(clients, map[string]any{"id": entry.FrontendUUID, "flow": "xtls-rprx-vision", "email": site.Domain})
-		outbounds = append(outbounds, map[string]any{
-			"tag": "to-" + site.Domain, "protocol": "vless",
-			"settings":       map[string]any{"vnext": []any{map[string]any{"address": backend.Host, "port": backend.Port, "users": []any{map[string]any{"id": backend.UUID, "flow": backend.Flow, "encryption": "none"}}}}},
-			"streamSettings": map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"serverName": backend.SNI, "fingerprint": backend.Fingerprint, "publicKey": backend.PublicKey, "shortId": backend.ShortID, "spiderX": backend.SpiderX}},
-		})
-		rules = append(rules, map[string]any{"type": "field", "user": []string{site.Domain}, "outboundTag": "to-" + site.Domain})
+		if mode == realityModeDirect {
+			// direct：自持出口，本机 freedom 直连；无需 streamSettings。
+			outbounds = append(outbounds, map[string]any{"tag": "to-" + site.Domain, "protocol": "freedom"})
+		} else {
+			outbounds = append(outbounds, map[string]any{
+				"tag": "to-" + site.Domain, "protocol": "vless",
+				"settings":       map[string]any{"vnext": []any{map[string]any{"address": backend.Host, "port": backend.Port, "users": []any{map[string]any{"id": backend.UUID, "flow": backend.Flow, "encryption": "none"}}}}},
+				"streamSettings": map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"serverName": backend.SNI, "fingerprint": backend.Fingerprint, "publicKey": backend.PublicKey, "shortId": backend.ShortID, "spiderX": backend.SpiderX}},
+			})
+		}
+		rules = append(rules, map[string]any{"type": "field", "inboundTag": []string{"reality-in"}, "user": []string{site.Domain}, "outboundTag": "to-" + site.Domain})
 	}
 	if len(names) == 0 {
 		return nil, nil
@@ -476,11 +488,25 @@ func loadRealityMaterial(sites []SiteMeta, p xrayPaths, fs relayFS) realityMater
 	return material
 }
 func validRealityEntry(site SiteMeta, entry realityEntry) bool {
-	backend := entry.Outbound
-	if site.Reality == nil || backend.Host != site.Reality.UpstreamHost || backend.Port != site.Reality.UpstreamPort {
+	if site.Reality == nil {
 		return false
 	}
-	if !validRealityUUID(entry.FrontendUUID) || !validRealityUUID(backend.UUID) || net.ParseIP(backend.Host) == nil || backend.Port < 1 || backend.Port > 65535 || backend.SNI == "" {
+	backend := entry.Outbound
+	mode, ok := normalizeRealityMode(site.Reality.Mode)
+	if !ok {
+		return false
+	}
+	if !validRealityUUID(entry.FrontendUUID) {
+		return false
+	}
+	if mode == realityModeDirect {
+		// direct：不允许残留任何上游配置，元数据上游字段必须为空。
+		return site.Reality.UpstreamHost == "" && site.Reality.UpstreamPort == 0 && backend == (realityOutbound{})
+	}
+	if backend.Host != site.Reality.UpstreamHost || backend.Port != site.Reality.UpstreamPort {
+		return false
+	}
+	if !validRealityUUID(backend.UUID) || net.ParseIP(backend.Host) == nil || backend.Port < 1 || backend.Port > 65535 || backend.SNI == "" {
 		return false
 	}
 	if backend.Flow != "" && backend.Flow != "xtls-rprx-vision" {
