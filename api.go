@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +25,7 @@ var (
 func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/healthz", healthz)
 	mux.HandleFunc("POST /api/login", loginHandler)
+	mux.HandleFunc("POST /api/logout", logoutHandler)
 
 	mux.HandleFunc("GET /api/whoami", auth(whoami))
 
@@ -138,6 +140,12 @@ func edgeInfo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, edgeResp{IPv4: edgeIPv4()})
 }
 
+// validEdgeIPv4 仅接受合法 IPv4 文本，避免缓存 HTML 等垃圾输出。
+func validEdgeIPv4(s string) bool {
+	ip := net.ParseIP(s)
+	return ip != nil && ip.To4() != nil && !strings.Contains(s, ":")
+}
+
 func edgeIPv4() string {
 	edgeIPCacheMu.Lock()
 	defer edgeIPCacheMu.Unlock()
@@ -146,11 +154,11 @@ func edgeIPv4() string {
 	}
 	ctx, cancel := contextWithTimeout(3 * time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "curl", "-s", "-4", "--max-time", "3", "https://ifconfig.me")
+	cmd := exec.CommandContext(ctx, "curl", "-sf", "-4", "--max-time", "3", "https://ifconfig.me")
 	out, err := cmd.Output()
 	if err == nil {
 		ip := strings.TrimSpace(string(out))
-		if ip != "" {
+		if validEdgeIPv4(ip) {
 			edgeIPCache = ip
 		}
 	}
@@ -319,6 +327,7 @@ func sitesEdit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	req.Upstream = strings.TrimSpace(req.Upstream)
 	if _, _, _, _, err := parseUpstream(req.Upstream); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

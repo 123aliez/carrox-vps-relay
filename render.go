@@ -33,6 +33,7 @@ type renderCtx struct {
 	Upstream       string
 	UpstreamScheme string
 	UpstreamHost   string
+	UpstreamAddr   string // host 为 IPv6 字面量时带方括号，仅用于 proxy_pass
 	UpstreamPort   int
 	UpstreamIsIP   bool
 	Owner          string
@@ -51,6 +52,9 @@ func parseUpstream(raw string) (scheme, host string, port int, isIP bool, err er
 	scheme = strings.ToLower(u.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return "", "", 0, false, fmt.Errorf("upstream scheme must be http/https, got %q", scheme)
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.User != nil {
+		return "", "", 0, false, errors.New("上游地址只能包含协议、主机和端口，不支持路径或参数")
 	}
 	host = u.Hostname()
 	if host == "" {
@@ -72,6 +76,14 @@ func parseUpstream(raw string) (scheme, host string, port int, isIP bool, err er
 	}
 	isIP = net.ParseIP(host) != nil
 	return
+}
+
+// upstreamAddr 在 IPv6 字面量外加方括号，其余原样返回。
+func upstreamAddr(host string) string {
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		return "[" + host + "]"
+	}
+	return host
 }
 
 func renderSite(meta SiteMeta) ([]byte, error) {
@@ -115,6 +127,7 @@ func renderSiteTemplateMode(meta SiteMeta, path string, sni bool) ([]byte, error
 		Upstream:       meta.Upstream,
 		UpstreamScheme: scheme,
 		UpstreamHost:   host,
+		UpstreamAddr:   upstreamAddr(host),
 		UpstreamPort:   port,
 		UpstreamIsIP:   isIP,
 		Owner:          meta.Owner,

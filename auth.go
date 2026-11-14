@@ -162,6 +162,20 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "密码错误"})
 }
 
+// logoutHandler 清除 HttpOnly 登录 Cookie（前端 JS 无法自行清除）。
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.Header.Get("X-Forwarded-Proto") == "https",
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tok := extractAuthToken(r)

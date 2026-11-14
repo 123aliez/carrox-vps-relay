@@ -122,6 +122,9 @@ func runACMEProcess(cmd *exec.Cmd, timeout time.Duration) error {
 }
 
 func autoRenewLoop() {
+	// 容器频繁重启时 12h 定时器可能永远不触发，启动约 2 分钟后先检查一次。
+	time.Sleep(2 * time.Minute)
+	renewExpiringCerts()
 	ticker := time.NewTicker(autoRenewInterval)
 	defer ticker.Stop()
 	for range ticker.C {

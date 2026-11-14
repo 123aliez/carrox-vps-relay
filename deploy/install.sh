@@ -152,11 +152,22 @@ if [ -n "$PANEL_DOMAIN" ]; then
     PANEL_TMPL="$HERE/templates/panel-ssl.conf.tmpl"
   fi
   bash "$HERE/deploy/render-panel-conf.sh" "$PANEL_DOMAIN" "$PANEL_TMPL" > "${PANEL_CONF}.new"
+  # 备份文件名不以 .conf 结尾，避免被 conf.d/*.conf 包含。
+  PANEL_BAK="${PANEL_CONF}.bak-install"
+  rm -f "$PANEL_BAK"
+  if [ -f "$PANEL_CONF" ]; then
+    cp -p "$PANEL_CONF" "$PANEL_BAK"
+  fi
   mv "${PANEL_CONF}.new" "$PANEL_CONF"
   if /usr/local/nginx/sbin/nginx -p /usr/local/nginx -c conf/nginx.conf -t >/dev/null 2>&1; then
+    rm -f "$PANEL_BAK"
     /usr/local/nginx/sbin/nginx -s reload
   else
-    rm -f "${PANEL_CONF}.new"
+    if [ -f "$PANEL_BAK" ]; then
+      mv "$PANEL_BAK" "$PANEL_CONF"
+    else
+      rm -f "$PANEL_CONF"
+    fi
     echo "ERROR: nginx -t failed for panel conf." >&2
     exit 1
   fi

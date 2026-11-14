@@ -10,7 +10,7 @@ import (
 )
 
 const testUUID = "11111111-2222-3333-4444-555555555555"
-const testLink = "vless://" + testUUID + "@198.51.100.7:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.cisco.com&fp=chrome&pbk=PUBKEY_x-1&sid=abcd&type=tcp&headerType=none#Reality-node"
+const testLink = "vless://" + testUUID + "@198.51.100.7:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.cisco.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=abcd&type=tcp&headerType=none#Reality-node"
 
 func TestParseRealityLink(t *testing.T) {
 	host, port, err := parseRealityLink(testLink)
@@ -22,7 +22,7 @@ func TestParseRealityLink(t *testing.T) {
 		"非 reality": strings.Replace(testLink, "security=reality", "security=tls", 1),
 		"缺 UUID":    strings.Replace(testLink, testUUID+"@", "", 1),
 		"缺 sni":     strings.Replace(testLink, "sni=www.cisco.com&", "", 1),
-		"缺 pbk":     strings.Replace(testLink, "pbk=PUBKEY_x-1&", "", 1),
+		"缺 pbk":     strings.Replace(testLink, "pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&", "", 1),
 		"缺端口":       strings.Replace(testLink, ":443", "", 1),
 		"端口超范围":     strings.Replace(testLink, ":443", ":70000", 1),
 		"格式错误":      "vless://" + testUUID + "@bad host:443?security=reality",

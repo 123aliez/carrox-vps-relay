@@ -280,7 +280,8 @@ func TestTemplatePreservesDNSMetadataAcrossEdit(t *testing.T) {
 	original := originRecord
 	meta := testMeta()
 	meta.DNS = &DNSChange{Mode: "replaced", ZoneID: testZone.ID, Before: &original, After: original}
-	meta.Upstream = "https://23.95.8.179/?q=\"中文\""
+	meta.Upstream = "https://23.95.8.179"
+	meta.Owner = "ad\"min中文" // 上游已禁止参数，改用 Owner 覆盖元数据转义
 	data, err := renderSiteWithTemplate(meta, "templates/site.conf.tmpl")
 	if err != nil {
 		t.Fatal(err)

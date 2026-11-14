@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -174,7 +175,7 @@ func probeSite(s *Site) {
 			s.UpstreamOK = tcpDial(net.JoinHostPort(s.Reality.UpstreamHost, fmt.Sprint(s.Reality.UpstreamPort)), 3*time.Second)
 		}
 	} else {
-		s.UpstreamOK = httpReachable(s.Upstream, 3*time.Second)
+		s.UpstreamOK = httpReachableWith(upstreamProbeClient, s.Upstream, 3*time.Second)
 	}
 	// Edge
 	s.EdgeOK = httpReachable("https://"+s.Domain+"/", 3*time.Second)
@@ -224,7 +225,19 @@ var probeClient = &http.Client{
 	},
 }
 
+// 上游探测专用：与 nginx 的 proxy_ssl_verify off 保持一致，仅检测可达性，不校验证书。
+var upstreamProbeClient = &http.Client{
+	Transport: &http.Transport{
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+		ResponseHeaderTimeout: 3 * time.Second,
+	},
+}
+
 func httpReachable(rawURL string, timeout time.Duration) bool {
+	return httpReachableWith(probeClient, rawURL, timeout)
+}
+
+func httpReachableWith(client *http.Client, rawURL string, timeout time.Duration) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return false
@@ -233,7 +246,7 @@ func httpReachable(rawURL string, timeout time.Duration) bool {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
 	req.Header.Set("User-Agent", "vps-relay-probe/1.0")
-	res, err := probeClient.Do(req)
+	res, err := client.Do(req)
 	if err != nil {
 		return false
 	}

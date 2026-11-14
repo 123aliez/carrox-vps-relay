@@ -106,7 +106,7 @@ func TestM15BackendRealityParsing(t *testing.T) {
 		strings.Replace(testLink, "type=tcp", "type=grpc", 1),
 		strings.Replace(testLink, "xtls-rprx-vision", "invalid-flow", 1),
 		strings.Replace(testLink, "sni=www.cisco.com&", "", 1),
-		strings.Replace(testLink, "pbk=PUBKEY_x-1&", "", 1),
+		strings.Replace(testLink, "pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&", "", 1),
 		"vless://" + testUUID + "@bad host:443?security=reality",
 	}
 	for _, raw := range invalid {
