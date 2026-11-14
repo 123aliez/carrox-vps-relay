@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>vps-relay</title>
-<script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script defer src="https://unpkg.com/alpinejs@3.14.9/dist/cdn.min.js" integrity="sha384-9Ax3MmS9AClxJyd5/zafcXXjxmwFhZCdsT6HJoJjarvCaAkJlk5QDzjLJm+Wdx5F" crossorigin="anonymous"></script>
 <style>
   :root {
     --bg: #f7f8fa; --card: #fff; --border: #e1e4e8; --muted: #6a737d;
@@ -428,8 +428,8 @@ function app() {
     },
 
     async logout() {
-      // No server-side session; just clear cookie + reload.
-      document.cookie = 'vps-relay-auth=; Path=/; Max-Age=0; SameSite=Lax';
+      // Cookie 为 HttpOnly，必须由服务端清除。
+      try { await fetch('/api/logout', { method: 'POST', credentials: 'include' }); } catch (e) {}
       this.loggedIn = false;
       this.keyId = '';
       this.role = '';

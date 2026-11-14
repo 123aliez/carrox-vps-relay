@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -132,6 +134,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var body struct {
 		Token string `json:"token"`
 	}
@@ -160,6 +163,20 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	recordFail(ip)
 	writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "密码错误"})
+}
+
+// logoutHandler 清除 HttpOnly 登录 Cookie（前端 JS 无法自行清除）。
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.Header.Get("X-Forwarded-Proto") == "https",
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func auth(next http.HandlerFunc) http.HandlerFunc {
@@ -221,6 +238,15 @@ func recordFail(ip string) {
 	failsMu.Lock()
 	defer failsMu.Unlock()
 	e := fails[ip]
+	if e == nil && len(fails) > maxFailEntries {
+		// 限制 map 大小：清理窗口和封禁都已过期的条目
+		now := time.Now()
+		for k, v := range fails {
+			if now.Sub(v.firstAt) > failWindow && now.After(v.blockedUntil) {
+				delete(fails, k)
+			}
+		}
+	}
 	if e == nil || time.Since(e.firstAt) > failWindow {
 		fails[ip] = &failEntry{count: 1, firstAt: time.Now()}
 		return
@@ -237,18 +263,29 @@ func resetFails(ip string) {
 	delete(fails, ip)
 }
 
+// clientIP 优先使用 X-Real-IP（nginx 模板设为 $remote_addr），不再信任客户端可控的 X-Forwarded-For。
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
-	}
-	if xr := r.Header.Get("X-Real-IP"); xr != "" {
+	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
 		return xr
 	}
-	h := r.RemoteAddr
-	if i := strings.LastIndex(h, ":"); i > 0 {
-		return h[:i]
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
-	return h
+	return r.RemoteAddr
+}
+
+const maxFailEntries = 10000
+
+var keyIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`)
+
+func validKeyID(id string) bool { return keyIDRE.MatchString(id) }
+
+// maskKey 只显示前 4 位，其余用 • 代替（密钥仅 12 位，不泄露尾部）。
+func maskKey(k string) string {
+	if len(k) <= 4 {
+		return strings.Repeat("•", len(k))
+	}
+	return k[:4] + strings.Repeat("•", 8)
 }
 
 func tokenEq(a, b string) bool {
@@ -291,6 +328,9 @@ func addKey(id, role, note string) (*KeyEntry, error) {
 	}
 	if role != "admin" && role != "user" {
 		return nil, &keyErr{"role 必须是 admin 或 user"}
+	}
+	if !validKeyID(id) {
+		return nil, &keyErr{"密钥 ID 只能包含字母、数字、- 和 _，最长 32 位"}
 	}
 	keyTableMu.Lock()
 	defer keyTableMu.Unlock()
@@ -346,7 +386,7 @@ func listKeys() []KeyEntry {
 	for _, e := range keyTable {
 		out = append(out, KeyEntry{
 			ID:   e.ID,
-			Key:  maskToken(e.Key),
+			Key:  maskKey(e.Key),
 			Role: e.Role,
 			Note: e.Note,
 		})

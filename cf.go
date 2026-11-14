@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const cfBase = "https://api.cloudflare.com/client/v4"
+var cfBase = "https://api.cloudflare.com/client/v4"
 
 type cfEnvelope[T any] struct {
 	Success bool      `json:"success"`
@@ -105,18 +105,24 @@ func cfVerifyToken(token string) error {
 }
 
 func cfListZones(token string) ([]cfZone, error) {
-	raw, err := cfDo(token, "GET", "/zones?per_page=50", nil)
-	if err != nil {
-		return nil, err
+	var zones []cfZone
+	for page := 1; ; page++ {
+		raw, err := cfDo(token, "GET", fmt.Sprintf("/zones?per_page=50&page=%d", page), nil)
+		if err != nil {
+			return nil, err
+		}
+		var env cfEnvelope[[]cfZone]
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return nil, err
+		}
+		if !env.Success {
+			return nil, cfErrorList(env.Errors)
+		}
+		zones = append(zones, env.Result...)
+		if len(env.Result) < 50 {
+			return zones, nil
+		}
 	}
-	var env cfEnvelope[[]cfZone]
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, err
-	}
-	if !env.Success {
-		return nil, cfErrorList(env.Errors)
-	}
-	return env.Result, nil
 }
 
 func cfFindZoneByName(token, name string) (*cfZone, error) {

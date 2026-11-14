@@ -158,7 +158,17 @@ func parseRealityOutbound(raw string) (realityOutbound, error) {
 	if !validRealityFingerprint(fp) {
 		return realityOutbound{}, errors.New("后端 fp 不受支持")
 	}
-	return realityOutbound{u.User.Username(), host, port, flow, q.Get("sni"), fp, q.Get("pbk"), q.Get("sid"), q.Get("spx")}, nil
+	uuid := u.User.Username()
+	if !validRealityUUID(uuid) {
+		return realityOutbound{}, errors.New("后端链接的 UUID 格式无效")
+	}
+	if pub, err := base64.RawURLEncoding.DecodeString(q.Get("pbk")); err != nil || len(pub) != 32 {
+		return realityOutbound{}, errors.New("后端链接的 pbk 无效")
+	}
+	if sid, err := hex.DecodeString(q.Get("sid")); err != nil || len(sid) > 8 {
+		return realityOutbound{}, errors.New("后端链接的 sid 无效")
+	}
+	return realityOutbound{uuid, host, port, flow, q.Get("sni"), fp, q.Get("pbk"), q.Get("sid"), q.Get("spx")}, nil
 }
 
 func validRealityFingerprint(fp string) bool {

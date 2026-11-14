@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
@@ -33,6 +34,7 @@ type renderCtx struct {
 	Upstream       string
 	UpstreamScheme string
 	UpstreamHost   string
+	UpstreamAddr   string // host 为 IPv6 字面量时带方括号，仅用于 proxy_pass
 	UpstreamPort   int
 	UpstreamIsIP   bool
 	Owner          string
@@ -52,9 +54,15 @@ func parseUpstream(raw string) (scheme, host string, port int, isIP bool, err er
 	if scheme != "http" && scheme != "https" {
 		return "", "", 0, false, fmt.Errorf("upstream scheme must be http/https, got %q", scheme)
 	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.User != nil {
+		return "", "", 0, false, errors.New("上游地址只能包含协议、主机和端口，不支持路径或参数")
+	}
 	host = u.Hostname()
 	if host == "" {
 		return "", "", 0, false, fmt.Errorf("upstream host empty")
+	}
+	if !validUpstreamHost(host) {
+		return "", "", 0, false, errors.New("上游主机名无效，只能是域名或 IP")
 	}
 	portStr := u.Port()
 	if portStr == "" {
@@ -72,6 +80,32 @@ func parseUpstream(raw string) (scheme, host string, port int, isIP bool, err er
 	}
 	isIP = net.ParseIP(host) != nil
 	return
+}
+
+var upstreamLabelRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
+
+// validUpstreamHost 只接受 IP 字面量或严格的 DNS 名称（允许单标签，不允许末尾点）。
+func validUpstreamHost(host string) bool {
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) > 63 || !upstreamLabelRE.MatchString(strings.ToLower(label)) {
+			return false
+		}
+	}
+	return true
+}
+
+// upstreamAddr 在 IPv6 字面量外加方括号，其余原样返回。
+func upstreamAddr(host string) string {
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		return "[" + host + "]"
+	}
+	return host
 }
 
 func renderSite(meta SiteMeta) ([]byte, error) {
@@ -115,6 +149,7 @@ func renderSiteTemplateMode(meta SiteMeta, path string, sni bool) ([]byte, error
 		Upstream:       meta.Upstream,
 		UpstreamScheme: scheme,
 		UpstreamHost:   host,
+		UpstreamAddr:   upstreamAddr(host),
 		UpstreamPort:   port,
 		UpstreamIsIP:   isIP,
 		Owner:          meta.Owner,

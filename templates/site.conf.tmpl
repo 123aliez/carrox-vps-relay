@@ -25,7 +25,7 @@ server {
     # ACME http-01 passthrough to the origin (for origin-side renewal).
     # ^~ beats regex locations; placed before location / so challenges reach the origin.
     location ^~ /.well-known/acme-challenge/ {
-        proxy_pass http://{{.UpstreamHost}}:80;
+        proxy_pass http://{{.UpstreamAddr}}:80;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
@@ -51,7 +51,7 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
 
     location / {
-        proxy_pass {{.UpstreamScheme}}://{{.UpstreamHost}}:{{.UpstreamPort}};
+        proxy_pass {{.UpstreamScheme}}://{{.UpstreamAddr}}:{{.UpstreamPort}};
         proxy_http_version 1.1;
 
         # Upstream Host: use upstream host name if it's a domain,

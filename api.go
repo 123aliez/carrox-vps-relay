@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +26,7 @@ var (
 func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/healthz", healthz)
 	mux.HandleFunc("POST /api/login", loginHandler)
+	mux.HandleFunc("POST /api/logout", logoutHandler)
 
 	mux.HandleFunc("GET /api/whoami", auth(whoami))
 
@@ -83,6 +86,7 @@ func cfTokenSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var body struct {
 		Token string `json:"token"`
 	}
@@ -138,6 +142,12 @@ func edgeInfo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, edgeResp{IPv4: edgeIPv4()})
 }
 
+// validEdgeIPv4 仅接受合法 IPv4 文本，避免缓存 HTML 等垃圾输出。
+func validEdgeIPv4(s string) bool {
+	ip := net.ParseIP(s)
+	return ip != nil && ip.To4() != nil && !strings.Contains(s, ":")
+}
+
 func edgeIPv4() string {
 	edgeIPCacheMu.Lock()
 	defer edgeIPCacheMu.Unlock()
@@ -146,11 +156,11 @@ func edgeIPv4() string {
 	}
 	ctx, cancel := contextWithTimeout(3 * time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "curl", "-s", "-4", "--max-time", "3", "https://ifconfig.me")
+	cmd := exec.CommandContext(ctx, "curl", "-sf", "-4", "--max-time", "3", "https://ifconfig.me")
 	out, err := cmd.Output()
 	if err == nil {
 		ip := strings.TrimSpace(string(out))
-		if ip != "" {
+		if validEdgeIPv4(ip) {
 			edgeIPCache = ip
 		}
 	}
@@ -158,6 +168,17 @@ func edgeIPv4() string {
 }
 
 // ---------------- Sites ----------------
+
+// writeNginxErr 只对普通用户隐藏 nginx -t 的原始输出（含宿主路径和其他站点文件名）；
+// DNS、证书等用户可自行处理的错误照常返回。
+func writeNginxErr(w http.ResponseWriter, r *http.Request, status int, err error) {
+	if authIsAdmin(r) || !strings.Contains(err.Error(), "nginx -t failed") {
+		writeErr(w, status, err.Error())
+		return
+	}
+	log.Printf("nginx 操作失败: %v", err)
+	writeErr(w, status, "配置校验或重载失败，请联系管理员查看日志")
+}
 
 func sitesList(w http.ResponseWriter, r *http.Request) {
 	keyID := authKeyID(r)
@@ -190,6 +211,7 @@ func sitesCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var req createReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -240,7 +262,7 @@ func sitesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	meta, err = provisionSite(meta, tok, edge, *zone, liveSiteLifecycle())
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeNginxErr(w, r, http.StatusBadGateway, err)
 		return
 	}
 	target := confPath(req.Domain)
@@ -314,11 +336,13 @@ func sitesEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var req editReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	req.Upstream = strings.TrimSpace(req.Upstream)
 	if _, _, _, _, err := parseUpstream(req.Upstream); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -337,7 +361,7 @@ func sitesEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if status, err := commitSiteEdit(fromPath, rendered, liveSiteEditOps()); err != nil {
-		writeErr(w, status, err.Error())
+		writeNginxErr(w, r, status, err)
 		return
 	}
 	site := Site{SiteMeta: meta, ConfPath: fromPath, Enabled: true}
@@ -399,7 +423,7 @@ func sitesToggle(w http.ResponseWriter, r *http.Request) {
 		if restoreErr == nil {
 			markNginxConsistent()
 		}
-		writeErr(w, http.StatusUnprocessableEntity, errors.Join(err, restoreErr).Error())
+		writeNginxErr(w, r, http.StatusUnprocessableEntity, errors.Join(err, restoreErr))
 		return
 	}
 	if err := nginxReload(); err != nil {
@@ -410,7 +434,7 @@ func sitesToggle(w http.ResponseWriter, r *http.Request) {
 		if restoreErr == nil {
 			markNginxConsistent()
 		}
-		writeErr(w, http.StatusInternalServerError, errors.Join(err, restoreErr).Error())
+		writeNginxErr(w, r, http.StatusInternalServerError, errors.Join(err, restoreErr))
 		return
 	}
 	if !completeNginxRequest(w) {
@@ -469,7 +493,7 @@ func sitesDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := removeManagedSite(meta, cfTokenForKey(owner), path, staged, liveSiteLifecycle()); err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeNginxErr(w, r, http.StatusBadGateway, err)
 		return
 	}
 
@@ -490,17 +514,22 @@ type adoptReq struct {
 }
 
 func sitesAdopt(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
 	unlock, ok := lockSiteRequest(w)
 	if !ok {
 		return
 	}
 	defer unlock()
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var req adoptReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if err := validateDomain(req.Domain); err != nil {
+	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
+	if err := validateSNIDomain(req.Domain); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -603,6 +632,7 @@ func keysCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var body struct {
 		ID   string `json:"id"`
 		Role string `json:"role"`
