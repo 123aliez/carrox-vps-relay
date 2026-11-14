@@ -95,9 +95,15 @@ func renderSiteWithTemplate(meta SiteMeta, path string) ([]byte, error) {
 }
 
 func renderSiteTemplateMode(meta SiteMeta, path string, sni bool) ([]byte, error) {
-	scheme, host, port, isIP, err := parseUpstream(meta.Upstream)
-	if err != nil {
-		return nil, err
+	// Reality 站点的 upstream 仅在 relay-meta JSON 中保留展示（direct 模式无上游），
+	// 模板不消费它，跳过解析避免 direct 的空 upstream 阻断渲染。
+	scheme, host, port, isIP := "", "", 0, false
+	if meta.Reality == nil {
+		var err error
+		scheme, host, port, isIP, err = parseUpstream(meta.Upstream)
+		if err != nil {
+			return nil, err
+		}
 	}
 	tmpl, err := template.ParseFiles(path)
 	if err != nil {

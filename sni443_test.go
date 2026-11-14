@@ -24,7 +24,7 @@ func m15Site() SiteMeta {
 func m15Reality() SiteMeta {
 	m := m15Site()
 	m.Domain = "cover.example.com"
-	m.Reality = &RealityMeta{"198.51.100.7", 443, "入口"}
+	m.Reality = &RealityMeta{Mode: realityModeTransit, UpstreamHost: "198.51.100.7", UpstreamPort: 443, Label: "入口"}
 	return m
 }
 func requireBytes(t *testing.T, got, want []byte) {
@@ -149,12 +149,12 @@ func TestM15Sync(t *testing.T) {
 	putTestFile(t, p.marker(), []byte(sni443Config))
 	a := m15Reality()
 	a.Domain = "a.example.com"
-	a.Reality = &RealityMeta{"198.51.100.7", 443, ""}
+	a.Reality = &RealityMeta{Mode: realityModeTransit, UpstreamHost: "198.51.100.7", UpstreamPort: 443}
 	putMeta(t, p, a, "")
 	for i, suffix := range []string{".disabled", tcpDeleteSuffix, ".disabled" + tcpDeleteSuffix} {
 		m := m15Reality()
 		m.Domain = fmt.Sprintf("off%d.example.com", i)
-		m.Reality = &RealityMeta{"198.51.100.9", 443, ""}
+		m.Reality = &RealityMeta{Mode: realityModeTransit, UpstreamHost: "198.51.100.9", UpstreamPort: 443}
 		putMeta(t, p, m, suffix)
 	}
 	putMeta(t, p, m15Site(), "")
@@ -189,7 +189,7 @@ func TestM15DerivedSortingDeduplication(t *testing.T) {
 	a := m15Reality()
 	b := m15Reality()
 	b.Domain = "a.example.com"
-	b.Reality = &RealityMeta{"2001:db8::7", 8443, ""}
+	b.Reality = &RealityMeta{Mode: realityModeTransit, UpstreamHost: "2001:db8::7", UpstreamPort: 8443}
 	first, err := renderSNIDerived([]SiteMeta{a, b, a})
 	if err != nil {
 		t.Fatal(err)

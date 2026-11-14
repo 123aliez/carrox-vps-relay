@@ -256,9 +256,22 @@
               </div>
               <div><label>备注</label><input type="text" maxlength="64" x-model="realityLabel" /></div>
             </div>
-            <label style="margin-top:0.65rem;">后端 vless 链接</label>
-            <input type="password" autocomplete="off" spellcheck="false" x-model="realitySource" placeholder="vless://…" />
-            <button style="margin-top:0.65rem;" @click="createReality()" :disabled="realityBusy || !sniEnabled || !realitySub || !realityZone || !realitySource || !cfReady"
+            <div style="margin-top:0.65rem;">
+              <label>出口模式</label>
+              <label style="display:inline-flex; align-items:center; gap:0.35rem; margin-right:1rem; font-weight:400;">
+                <input type="radio" value="transit" x-model="realityMode" /> 链式中转（转发到远端后端）
+              </label>
+              <label style="display:inline-flex; align-items:center; gap:0.35rem; font-weight:400;">
+                <input type="radio" value="direct" x-model="realityMode" /> 自持出口（本机直连，流量从本 VPS 发出）
+              </label>
+            </div>
+            <template x-if="realityMode === 'transit'">
+              <div>
+                <label style="margin-top:0.65rem;">后端 vless 链接</label>
+                <input type="password" autocomplete="off" spellcheck="false" x-model="realitySource" placeholder="vless://…" />
+              </div>
+            </template>
+            <button style="margin-top:0.65rem;" @click="createReality()" :disabled="realityBusy || !sniEnabled || !realitySub || !realityZone || (realityMode === 'transit' && !realitySource) || !cfReady"
                     x-text="realityBusy ? '创建中…' : '创建入口'"></button>
           </fieldset>
           <template x-if="realityExport">
@@ -274,7 +287,7 @@
             <div class="site" :class="{disabled: !s.enabled}" style="margin-top:0.75rem;">
               <div class="site-head">
                 <span class="dom" x-text="s.domain"></span>
-                <span class="ups" x-text="s.upstream"></span>
+                <span class="ups" x-text="s.reality.mode === 'direct' ? '本机出口' : s.upstream"></span>
                 <span class="pill small" :class="s.reality_paused ? 'warn' : (s.enabled ? 'ok' : 'muted')" x-text="s.reality_paused ? '暂停' : (s.enabled ? '启用' : '停用')"></span>
                 <template x-if="s.deletion_pending"><span class="pill warn small">删除未完成</span></template>
                 <span class="pill small" :class="s.upstream_ok ? 'ok' : 'err'">upstream</span>
@@ -369,7 +382,7 @@ function app() {
     // key management (admin)
     keys: [], newKeyId: '', newUserNote: '', newKeyBusy: false, newKeyResult: null,
     // Reality 入口：凭据只保存在当前会话，退出时清空。
-    sniEnabled: false, xrayRunning: false, xrayError: '', realitySites: [], realitySub: '', realityZone: '', realityLabel: '', realitySource: '', realityBusy: false, realityError: '', realityExport: '',
+    sniEnabled: false, xrayRunning: false, xrayError: '', realitySites: [], realitySub: '', realityZone: '', realityLabel: '', realitySource: '', realityMode: 'transit', realityBusy: false, realityError: '', realityExport: '',
     get cfReady() { return !!this.cfStatus.configured; },
 
     flashIt(msg, ok=true) { this.flash = msg; this.flashOk = ok; setTimeout(()=>this.flash='', 5000); },
@@ -535,7 +548,7 @@ function app() {
       try {
         const r = await fetch('/api/reality', {
           method: 'POST', headers: {'Content-Type':'application/json'}, credentials: 'include',
-          body: JSON.stringify({ domain: this.realitySub.trim() + '.' + this.realityZone, link: this.realitySource.trim(), label: this.realityLabel.trim() })
+          body: JSON.stringify({ domain: this.realitySub.trim() + '.' + this.realityZone, link: this.realityMode === 'direct' ? '' : this.realitySource.trim(), label: this.realityLabel.trim(), mode: this.realityMode })
         });
         const j = await r.json().catch(()=>({}));
         if (!r.ok) { this.realityError = j.error || '创建失败'; return; }
