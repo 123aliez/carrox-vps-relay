@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
@@ -60,6 +61,9 @@ func parseUpstream(raw string) (scheme, host string, port int, isIP bool, err er
 	if host == "" {
 		return "", "", 0, false, fmt.Errorf("upstream host empty")
 	}
+	if !validUpstreamHost(host) {
+		return "", "", 0, false, errors.New("上游主机名无效，只能是域名或 IP")
+	}
 	portStr := u.Port()
 	if portStr == "" {
 		if scheme == "https" {
@@ -76,6 +80,24 @@ func parseUpstream(raw string) (scheme, host string, port int, isIP bool, err er
 	}
 	isIP = net.ParseIP(host) != nil
 	return
+}
+
+var upstreamLabelRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
+
+// validUpstreamHost 只接受 IP 字面量或严格的 DNS 名称（允许单标签，不允许末尾点）。
+func validUpstreamHost(host string) bool {
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) > 63 || !upstreamLabelRE.MatchString(strings.ToLower(label)) {
+			return false
+		}
+	}
+	return true
 }
 
 // upstreamAddr 在 IPv6 字面量外加方括号，其余原样返回。
